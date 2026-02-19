@@ -39,17 +39,16 @@ def load_data(**context):
     raw_df = handler.normalize_schema(raw_df)
     raw_df = handler.subsample(raw_df)
 
-    # Save to temp
-    output_path = '/tmp/laundrograph/raw_data.parquet'
-    os.makedirs('/tmp/laundrograph', exist_ok=True)
-    raw_df.to_parquet(output_path, index=False)
+    # Save to GCS
+    gcs_path = f'gs://{GCS_BUCKET}/raw/data.parquet'
+    raw_df.to_parquet(gcs_path, index=False)
 
-    print(f"Loaded {len(raw_df)} records")
+    print(f"Loaded {len(raw_df)} records to {gcs_path}")
 
-    context['task_instance'].xcom_push(key='raw_data_path', value=output_path)
+    context['task_instance'].xcom_push(key='raw_data_path', value=gcs_path)
     context['task_instance'].xcom_push(key='dataset_config', value=dataset_config)
 
-    return output_path
+    return gcs_path
 
 
 def data_validation(**context):
@@ -59,9 +58,9 @@ def data_validation(**context):
     raw_data_path = ti.xcom_pull(task_ids='load_data_task', key='raw_data_path')
     dataset_config = ti.xcom_pull(task_ids='load_data_task', key='dataset_config')
 
-    # Load raw data
+    # Load raw data from GCS
     raw_df = pd.read_parquet(raw_data_path)
-    print(f"[Validation] Validating {len(raw_df)} records")
+    print(f"[Validation] Validating {len(raw_df)} records from {raw_data_path}")
 
     # Schema validation
     required_fields = ['id', 'name', 'address']
@@ -102,29 +101,28 @@ def data_transformation(**context):
     raw_data_path = ti.xcom_pull(task_ids='load_data_task', key='raw_data_path')
     dataset_config = ti.xcom_pull(task_ids='load_data_task', key='dataset_config')
 
-    # Load raw data
+    # Load raw data from GCS
     raw_df = pd.read_parquet(raw_data_path)
-    print(f"[Transformation] Processing {len(raw_df)} records")
+    print(f"[Transformation] Processing {len(raw_df)} records from {raw_data_path}")
 
     # Run preprocessing pipeline
     accounts_df, pairs_df = preprocess_dataset(raw_df, dataset_config)
 
     print(f"[Transformation] Generated {len(accounts_df)} accounts, {len(pairs_df)} pairs")
 
-    # Save to CSV
-    os.makedirs('/tmp/laundrograph', exist_ok=True)
-    accounts_csv = '/tmp/laundrograph/accounts.csv'
-    pairs_csv = '/tmp/laundrograph/er_pairs.csv'
+    # Save to GCS
+    accounts_path = f'gs://{GCS_BUCKET}/processed/accounts.csv'
+    pairs_path = f'gs://{GCS_BUCKET}/processed/er_pairs.csv'
 
-    accounts_df.to_csv(accounts_csv, index=False)
-    pairs_df.to_csv(pairs_csv, index=False)
+    accounts_df.to_csv(accounts_path, index=False)
+    pairs_df.to_csv(pairs_path, index=False)
 
-    print(f"[Transformation] Saved: {accounts_csv}, {pairs_csv}")
+    print(f"[Transformation] Saved to GCS: {accounts_path}, {pairs_path}")
 
-    ti.xcom_push(key='accounts_csv', value=accounts_csv)
-    ti.xcom_push(key='pairs_csv', value=pairs_csv)
+    ti.xcom_push(key='accounts_csv', value=accounts_path)
+    ti.xcom_push(key='pairs_csv', value=pairs_path)
 
-    return {'accounts': accounts_csv, 'pairs': pairs_csv}
+    return {'accounts': accounts_path, 'pairs': pairs_path}
 
 
 # DAG configuration
@@ -138,7 +136,7 @@ default_args = {
 with DAG(
     dag_id="laundrograph_data_pipeline",
     default_args=default_args,
-    description="Data Pipeline with validation and transformation stages",
+    description="Data Pipeline with separate validation and transformation stages",
     schedule=None,
     catchup=False,
     tags=["entity-resolution", "data-pipeline"],
@@ -159,25 +157,14 @@ with DAG(
         python_callable=data_transformation,
     )
 
-    upload_accounts = LocalFilesystemToGCSOperator(
-        task_id='upload_accounts_to_gcs',
-        src='/tmp/laundrograph/accounts.csv',
-        dst='data/accounts.csv',
-        bucket=GCS_BUCKET,
-    )
-
-    upload_pairs = LocalFilesystemToGCSOperator(
-        task_id='upload_pairs_to_gcs',
-        src='/tmp/laundrograph/er_pairs.csv',
-        dst='data/er_pairs.csv',
-        bucket=GCS_BUCKET,
-    )
+    # No need for separate upload tasks - data is already in GCS
+    # Load directly from GCS to BigQuery
 
     load_accounts_bq = BigQueryInsertJobOperator(
         task_id='load_accounts_bigquery',
         configuration={
             'load': {
-                'sourceUris': [f'gs://{GCS_BUCKET}/data/accounts.csv'],
+                'sourceUris': [f'gs://{GCS_BUCKET}/processed/accounts.csv'],
                 'destinationTable': {
                     'projectId': GCP_PROJECT_ID,
                     'datasetId': BQ_DATASET,
@@ -195,7 +182,7 @@ with DAG(
         task_id='load_pairs_bigquery',
         configuration={
             'load': {
-                'sourceUris': [f'gs://{GCS_BUCKET}/data/er_pairs.csv'],
+                'sourceUris': [f'gs://{GCS_BUCKET}/processed/er_pairs.csv'],
                 'destinationTable': {
                     'projectId': GCP_PROJECT_ID,
                     'datasetId': BQ_DATASET,
@@ -209,9 +196,8 @@ with DAG(
         }
     )
 
-    load_data_task >> data_validation_task >> data_transformation_task >> [upload_accounts, upload_pairs]
-    upload_accounts >> load_accounts_bq
-    upload_pairs >> load_pairs_bq
+    # Pipeline flow - simplified without separate upload tasks
+    load_data_task >> data_validation_task >> data_transformation_task >> [load_accounts_bq, load_pairs_bq]
 
 
 if __name__ == "__main__":
