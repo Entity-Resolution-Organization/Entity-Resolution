@@ -1,5 +1,5 @@
 """
-Entity Resolution Data Pipeline
+Entity Resolution Data Pipeline - Split Validation & Transformation
 """
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -52,8 +52,8 @@ def load_data(**context):
     return output_path
 
 
-def data_preprocessing(**context):
-    """Preprocess data with simple (non-batched) processing."""
+def data_validation(**context):
+    """Validate raw data quality and schema."""
     ti = context['task_instance']
 
     raw_data_path = ti.xcom_pull(task_ids='load_data_task', key='raw_data_path')
@@ -61,14 +61,57 @@ def data_preprocessing(**context):
 
     # Load raw data
     raw_df = pd.read_parquet(raw_data_path)
-    print(f"Processing {len(raw_df)} records")
+    print(f"[Validation] Validating {len(raw_df)} records")
 
-    # Simple preprocessing - returns DataFrames
+    # Schema validation
+    required_fields = ['id', 'name', 'address']
+    missing_fields = [f for f in required_fields if f not in raw_df.columns]
+    if missing_fields:
+        raise ValueError(f"Missing required fields: {missing_fields}")
+
+    # Null check
+    null_counts = raw_df[required_fields].isnull().sum()
+    null_pct = (null_counts / len(raw_df) * 100).round(2)
+    print(f"[Validation] Null percentages: {null_pct.to_dict()}")
+
+    if (null_counts > len(raw_df) * 0.5).any():
+        raise ValueError(f"Excessive nulls detected: {null_counts[null_counts > len(raw_df) * 0.5].to_dict()}")
+
+    # Distribution check
+    print(f"[Validation] Unique IDs: {raw_df['id'].nunique()}")
+    print(f"[Validation] Unique names: {raw_df['name'].nunique()}")
+
+    # Data quality metrics
+    validation_results = {
+        'total_records': len(raw_df),
+        'null_counts': null_counts.to_dict(),
+        'unique_ids': int(raw_df['id'].nunique()),
+        'passed': True
+    }
+
+    print(f"[Validation] ✓ All checks passed")
+
+    ti.xcom_push(key='validation_results', value=validation_results)
+    return validation_results
+
+
+def data_transformation(**context):
+    """Transform data: normalize, corrupt, generate pairs."""
+    ti = context['task_instance']
+
+    raw_data_path = ti.xcom_pull(task_ids='load_data_task', key='raw_data_path')
+    dataset_config = ti.xcom_pull(task_ids='load_data_task', key='dataset_config')
+
+    # Load raw data
+    raw_df = pd.read_parquet(raw_data_path)
+    print(f"[Transformation] Processing {len(raw_df)} records")
+
+    # Run preprocessing pipeline
     accounts_df, pairs_df = preprocess_dataset(raw_df, dataset_config)
 
-    print(f"Generated {len(accounts_df)} accounts, {len(pairs_df)} pairs")
+    print(f"[Transformation] Generated {len(accounts_df)} accounts, {len(pairs_df)} pairs")
 
-    # Convert to CSV
+    # Save to CSV
     os.makedirs('/tmp/laundrograph', exist_ok=True)
     accounts_csv = '/tmp/laundrograph/accounts.csv'
     pairs_csv = '/tmp/laundrograph/er_pairs.csv'
@@ -76,7 +119,7 @@ def data_preprocessing(**context):
     accounts_df.to_csv(accounts_csv, index=False)
     pairs_df.to_csv(pairs_csv, index=False)
 
-    print(f"Saved: {accounts_csv}, {pairs_csv}")
+    print(f"[Transformation] Saved: {accounts_csv}, {pairs_csv}")
 
     ti.xcom_push(key='accounts_csv', value=accounts_csv)
     ti.xcom_push(key='pairs_csv', value=pairs_csv)
@@ -95,7 +138,7 @@ default_args = {
 with DAG(
     dag_id="laundrograph_data_pipeline",
     default_args=default_args,
-    description="Data Pipeline - Simple processing for datasets < 100K records",
+    description="Data Pipeline with validation and transformation stages",
     schedule=None,
     catchup=False,
     tags=["entity-resolution", "data-pipeline"],
@@ -106,9 +149,14 @@ with DAG(
         python_callable=load_data,
     )
 
-    data_preprocessing_task = PythonOperator(
-        task_id="data_preprocessing_task",
-        python_callable=data_preprocessing,
+    data_validation_task = PythonOperator(
+        task_id="data_validation_task",
+        python_callable=data_validation,
+    )
+
+    data_transformation_task = PythonOperator(
+        task_id="data_transformation_task",
+        python_callable=data_transformation,
     )
 
     upload_accounts = LocalFilesystemToGCSOperator(
@@ -161,8 +209,7 @@ with DAG(
         }
     )
 
-    # Pipeline flow
-    load_data_task >> data_preprocessing_task >> [upload_accounts, upload_pairs]
+    load_data_task >> data_validation_task >> data_transformation_task >> [upload_accounts, upload_pairs]
     upload_accounts >> load_accounts_bq
     upload_pairs >> load_pairs_bq
 
