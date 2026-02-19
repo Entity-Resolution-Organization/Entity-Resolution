@@ -1,9 +1,12 @@
-"""Data corruption and pair generation for entity resolution."""
 import pandas as pd
 import random
 import numpy as np
 import re
 from typing import List, Tuple, Dict
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 class DataNormalizer:
@@ -11,7 +14,7 @@ class DataNormalizer:
 
     @staticmethod
     def normalize_name(name: str) -> str:
-        """Normalize person/product names."""
+        """Normalize person/product/author names."""
         if pd.isna(name):
             return ""
 
@@ -21,14 +24,14 @@ class DataNormalizer:
         # Title case (proper names)
         name = name.title()
 
-        # Remove special characters (keep letters, spaces, hyphens)
+        # Keep alphanumeric, spaces, hyphens, periods (FIXED: added 0-9)
         name = re.sub(r'[^a-zA-Z0-9\s\-\.]', '', name)
 
-        return name
+        return name.strip()
 
     @staticmethod
     def normalize_address(address: str) -> str:
-        """Normalize addresses."""
+        """Normalize addresses/descriptions/titles."""
         if pd.isna(address):
             return ""
 
@@ -37,16 +40,18 @@ class DataNormalizer:
         # Remove extra whitespace
         address = re.sub(r'\s+', ' ', address)
 
-        # Standardize common abbreviations
+        # Standardize common abbreviations (word boundaries to avoid partial matches)
         address = re.sub(r'\bSt\b\.?', 'Street', address, flags=re.IGNORECASE)
         address = re.sub(r'\bAve\b\.?', 'Avenue', address, flags=re.IGNORECASE)
         address = re.sub(r'\bBlvd\b\.?', 'Boulevard', address, flags=re.IGNORECASE)
         address = re.sub(r'\bRd\b\.?', 'Road', address, flags=re.IGNORECASE)
+        address = re.sub(r'\bDr\b\.?', 'Drive', address, flags=re.IGNORECASE)
+        address = re.sub(r'\bLn\b\.?', 'Lane', address, flags=re.IGNORECASE)
 
         # Title case
         address = address.title()
 
-        return address
+        return address.strip()
 
     @staticmethod
     def normalize_date(date_str: str) -> str:
@@ -54,17 +59,16 @@ class DataNormalizer:
         if pd.isna(date_str):
             return ""
 
-        # Try parsing common formats
         try:
-            from datetime import datetime
-            # Try ISO format first
+            # Try parsing common formats
             if isinstance(date_str, str):
                 # Remove any non-numeric except dashes/slashes
                 cleaned = re.sub(r'[^\d\-/]', '', str(date_str))
                 dt = pd.to_datetime(cleaned)
                 return dt.strftime('%Y-%m-%d')
             return str(date_str)
-        except:
+        except Exception as e:
+            logger.warning(f"Could not parse date '{date_str}': {e}")
             return str(date_str)
 
     @staticmethod
@@ -72,13 +76,13 @@ class DataNormalizer:
         """Normalize entire record."""
         normalized = record.copy()
 
-        if 'name' in normalized:
+        if 'name' in normalized and pd.notna(normalized['name']):
             normalized['name'] = DataNormalizer.normalize_name(normalized['name'])
 
-        if 'address' in normalized:
+        if 'address' in normalized and pd.notna(normalized['address']):
             normalized['address'] = DataNormalizer.normalize_address(normalized['address'])
 
-        if 'dob' in normalized:
+        if 'dob' in normalized and pd.notna(normalized['dob']):
             normalized['dob'] = DataNormalizer.normalize_date(normalized['dob'])
 
         # Remove leading/trailing whitespace from all string columns
@@ -90,7 +94,7 @@ class DataNormalizer:
 
 
 class NameCorruptor:
-    """Generating realistic name variants and corruptions."""
+    """Generate realistic name variants and corruptions."""
 
     NICKNAME_MAP = {
         'Robert': ['Bob', 'Rob', 'Bobby'],
@@ -134,29 +138,35 @@ class NameCorruptor:
         return name
 
     @staticmethod
-    def apply_typo(name: str) -> str:
-        """Introduce random typo."""
-        if len(name) < 3:
-            return name
+    def apply_typo(text: str) -> str:
+        """Introduce random typo (works for any text)."""
+        if len(text) < 3:
+            return text
 
-        pos = random.randint(0, len(name) - 1)
+        pos = random.randint(0, len(text) - 1)
         typo_type = random.choice(['delete', 'substitute', 'transpose'])
 
         if typo_type == 'delete':
-            return name[:pos] + name[pos+1:]
+            return text[:pos] + text[pos+1:]
         elif typo_type == 'substitute':
-            new_char = chr(random.randint(97, 122))
-            return name[:pos] + new_char + name[pos+1:]
+            # Choose appropriate replacement (letter for letter, digit for digit)
+            if text[pos].isalpha():
+                new_char = chr(random.randint(97, 122))  # a-z
+            elif text[pos].isdigit():
+                new_char = str(random.randint(0, 9))
+            else:
+                return text
+            return text[:pos] + new_char + text[pos+1:]
         else:  # transpose
-            if pos < len(name) - 1:
-                chars = list(name)
+            if pos < len(text) - 1:
+                chars = list(text)
                 chars[pos], chars[pos+1] = chars[pos+1], chars[pos]
                 return ''.join(chars)
-        return name
+        return text
 
 
 class AddressCorruptor:
-    """Generate realistic address variants and corruptions."""
+    """Generate realistic address/text variants and corruptions."""
 
     ABBREVIATIONS = {
         'Street': ['St', 'St.', 'Str'],
@@ -174,46 +184,43 @@ class AddressCorruptor:
     }
 
     @staticmethod
-    def abbreviate(address: str) -> str:
+    def abbreviate(text: str) -> str:
         """Convert full words to abbreviations."""
         for full, abbrevs in AddressCorruptor.ABBREVIATIONS.items():
-            if full in address:
-                address = address.replace(full, random.choice(abbrevs))
-        return address
+            if full in text:
+                text = text.replace(full, random.choice(abbrevs))
+        return text
 
     @staticmethod
-    def expand_abbreviations(address: str) -> str:
+    def expand_abbreviations(text: str) -> str:
         """Expand abbreviations to full words."""
-
         for full, abbrevs in AddressCorruptor.ABBREVIATIONS.items():
             for abbrev in abbrevs:
-                # Use word boundaries
-                import re
+                # Use word boundaries to avoid partial matches
                 pattern = r'\b' + re.escape(abbrev) + r'\b'
-                address = re.sub(pattern, full, address)
-        return address
+                text = re.sub(pattern, full, text, flags=re.IGNORECASE)
+        return text
 
     @staticmethod
-    def apply_typo(address: str, rate: float = 0.15) -> str:
+    def apply_typo(text: str, rate: float = 0.15) -> str:
         """Introduce typos at specified rate."""
-        words = address.split()
+        words = text.split()
         corrupted = []
 
         for word in words:
             if random.random() < rate and len(word) > 2:
-                word = NameCorruptor.apply_typo(word)  # Reuse typo logic
+                word = NameCorruptor.apply_typo(word)
             corrupted.append(word)
 
         return ' '.join(corrupted)
 
     @staticmethod
-    def reorder_components(address: str) -> str:
-        """Reorder address components (e.g., move apartment number)."""
-        # Simple implementation: swap first two components
-        parts = address.split(',')
+    def reorder_components(text: str) -> str:
+        """Reorder text components (works for comma-separated text)."""
+        parts = text.split(',')
         if len(parts) >= 2:
             return f"{parts[1].strip()}, {parts[0].strip()}"
-        return address
+        return text
 
 
 class DataCorruptor:
@@ -228,46 +235,50 @@ class DataCorruptor:
         """Apply corruption to single record."""
         corrupted = record.copy()
 
-        # Name corruption (only if field exists)
-        if 'name' in corrupted and pd.notna(corrupted['name']):
+        # Name corruption (only if field exists and has value)
+        if 'name' in corrupted and pd.notna(corrupted['name']) and str(corrupted['name']).strip():
             if random.random() < self.corruption_rate:
-                corruption_type = random.choice([
-                    'nickname', 'swap', 'middle_initial', 'typo'
-                ])
+                corruption_type = random.choice(['nickname', 'swap', 'middle_initial', 'typo'])
 
-                if corruption_type == 'nickname':
-                    corrupted['name'] = self.name_corruptor.apply_nickname(record['name'])
-                elif corruption_type == 'swap':
-                    corrupted['name'] = self.name_corruptor.swap_first_last(record['name'])
-                elif corruption_type == 'middle_initial':
-                    corrupted['name'] = self.name_corruptor.add_middle_initial(record['name'])
-                elif corruption_type == 'typo':
-                    corrupted['name'] = self.name_corruptor.apply_typo(record['name'])
+                try:
+                    if corruption_type == 'nickname':
+                        corrupted['name'] = self.name_corruptor.apply_nickname(str(record['name']))
+                    elif corruption_type == 'swap':
+                        corrupted['name'] = self.name_corruptor.swap_first_last(str(record['name']))
+                    elif corruption_type == 'middle_initial':
+                        corrupted['name'] = self.name_corruptor.add_middle_initial(str(record['name']))
+                    elif corruption_type == 'typo':
+                        corrupted['name'] = self.name_corruptor.apply_typo(str(record['name']))
+                except Exception as e:
+                    logger.warning(f"Name corruption failed: {e}")
 
-        # Address corruption (only if field exists)
-        if 'address' in corrupted and pd.notna(corrupted['address']):
+        # Address corruption (only if field exists and has value)
+        if 'address' in corrupted and pd.notna(corrupted['address']) and str(corrupted['address']).strip():
             if random.random() < self.corruption_rate:
-                corruption_type = random.choice([
-                    'abbreviate', 'expand', 'typo', 'reorder'
-                ])
+                corruption_type = random.choice(['abbreviate', 'expand', 'typo', 'reorder'])
 
-                if corruption_type == 'abbreviate':
-                    corrupted['address'] = self.address_corruptor.abbreviate(record['address'])
-                elif corruption_type == 'expand':
-                    corrupted['address'] = self.address_corruptor.expand_abbreviations(record['address'])
-                elif corruption_type == 'typo':
-                    corrupted['address'] = self.address_corruptor.apply_typo(record['address'])
-                elif corruption_type == 'reorder':
-                    corrupted['address'] = self.address_corruptor.reorder_components(record['address'])
+                try:
+                    if corruption_type == 'abbreviate':
+                        corrupted['address'] = self.address_corruptor.abbreviate(str(record['address']))
+                    elif corruption_type == 'expand':
+                        corrupted['address'] = self.address_corruptor.expand_abbreviations(str(record['address']))
+                    elif corruption_type == 'typo':
+                        corrupted['address'] = self.address_corruptor.apply_typo(str(record['address']))
+                    elif corruption_type == 'reorder':
+                        corrupted['address'] = self.address_corruptor.reorder_components(str(record['address']))
+                except Exception as e:
+                    logger.warning(f"Address corruption failed: {e}")
 
         return corrupted
 
     def expand_dataset(self, df: pd.DataFrame, target_size: int) -> pd.DataFrame:
         """Expand dataset by creating corrupted variants."""
-        if len(df) == 0 or target_size == 0:  # Add this check
+        if len(df) == 0 or target_size == 0:
+            logger.warning("Empty dataset or target_size=0, returning empty DataFrame")
             return df
 
-        expansion_factor = target_size // len(df)
+        expansion_factor = max(1, target_size // len(df))
+        logger.info(f"Expanding dataset: {len(df)} → {target_size} records (factor: {expansion_factor})")
 
         expanded_records = []
         record_counter = 0
@@ -275,7 +286,7 @@ class DataCorruptor:
         for idx, row in df.iterrows():
             # Keep original
             original = row.copy()
-            original['cluster_id'] = row['id']  # Track original entity
+            original['cluster_id'] = row['id']
             expanded_records.append(original)
             record_counter += 1
 
@@ -294,6 +305,8 @@ class DataCorruptor:
                 break
 
         expanded_df = pd.DataFrame(expanded_records)
+        logger.info(f"Expansion complete: {len(expanded_df)} records generated")
+
         return expanded_df[:target_size]
 
 
@@ -303,8 +316,6 @@ class PairGenerator:
     @staticmethod
     def generate_positive_pairs(df: pd.DataFrame, n_pairs: int) -> pd.DataFrame:
         """Generate positive pairs (same cluster_id)."""
-        pairs = []
-
         # Validate required fields exist
         required_fields = ['id', 'cluster_id', 'name', 'address']
         missing_fields = [f for f in required_fields if f not in df.columns]
@@ -312,23 +323,34 @@ class PairGenerator:
             raise ValueError(f"Missing required fields: {missing_fields}")
 
         if len(df) == 0:
+            logger.warning("Empty dataframe, returning empty positive pairs")
             return pd.DataFrame(columns=['id1', 'id2', 'name1', 'name2', 'address1', 'address2', 'label'])
 
         # Group by cluster_id
         grouped = df.groupby('cluster_id')
 
-        if len(grouped) == 0:  # Add this line
+        if len(grouped) == 0:
+            logger.warning("No cluster groups found, returning empty positive pairs")
             return pd.DataFrame(columns=['id1', 'id2', 'name1', 'name2', 'address1', 'address2', 'label'])
 
-        pairs_per_cluster = n_pairs // len(grouped)
+        pairs = []
+        pairs_per_cluster = max(1, n_pairs // len(grouped))
 
         for cluster_id, group in grouped:
             if len(group) < 2:
                 continue
 
             # Sample pairs within cluster
-            for _ in range(min(pairs_per_cluster, len(group) * (len(group) - 1) // 2)):
-                sample = group.sample(2)
+            max_possible_pairs = min(pairs_per_cluster, len(group) * (len(group) - 1) // 2)
+
+            for _ in range(max_possible_pairs):
+                if len(group) < 2:
+                    break
+
+                sample = group.sample(min(2, len(group)))
+                if len(sample) < 2:
+                    continue
+
                 pairs.append({
                     'id1': sample.iloc[0]['id'],
                     'id2': sample.iloc[1]['id'],
@@ -339,18 +361,14 @@ class PairGenerator:
                     'label': 1
                 })
 
-        return pd.DataFrame(pairs[:n_pairs])
+        result_df = pd.DataFrame(pairs[:n_pairs])
+        logger.info(f"Generated {len(result_df)} positive pairs (requested: {n_pairs})")
+
+        return result_df
 
     @staticmethod
     def generate_negative_pairs(df: pd.DataFrame, n_pairs: int) -> pd.DataFrame:
         """Generate negative pairs (different cluster_id)."""
-        pairs = []
-        unique_clusters = df['cluster_id'].unique()
-
-        if len(unique_clusters) < 2:
-            # Return empty dataframe instead of error
-            return pd.DataFrame(columns=['id1', 'id2', 'name1', 'name2', 'address1', 'address2', 'label'])
-
         # Validate required fields exist
         required_fields = ['id', 'cluster_id', 'name', 'address']
         missing_fields = [f for f in required_fields if f not in df.columns]
@@ -360,67 +378,111 @@ class PairGenerator:
         unique_clusters = df['cluster_id'].unique()
 
         if len(unique_clusters) < 2:
-            raise ValueError("Need at least 2 unique clusters to generate negative pairs")
+            logger.warning(f"Insufficient clusters ({len(unique_clusters)}), returning empty negative pairs")
+            return pd.DataFrame(columns=['id1', 'id2', 'name1', 'name2', 'address1', 'address2', 'label'])
+
+        pairs = []
 
         for _ in range(n_pairs):
-            # Sample two different clusters
-            cluster1, cluster2 = random.sample(list(unique_clusters), 2)
+            try:
+                # Sample two different clusters
+                cluster1, cluster2 = random.sample(list(unique_clusters), 2)
 
-            record1 = df[df['cluster_id'] == cluster1].sample(1).iloc[0]
-            record2 = df[df['cluster_id'] == cluster2].sample(1).iloc[0]
+                record1 = df[df['cluster_id'] == cluster1].sample(1).iloc[0]
+                record2 = df[df['cluster_id'] == cluster2].sample(1).iloc[0]
 
-            pairs.append({
-                'id1': record1['id'],
-                'id2': record2['id'],
-                'name1': record1['name'],
-                'name2': record2['name'],  # Fixed: was record1['name']
-                'address1': record1['address'],
-                'address2': record2['address'],
-                'label': 0
-            })
+                pairs.append({
+                    'id1': record1['id'],
+                    'id2': record2['id'],
+                    'name1': record1['name'],
+                    'name2': record2['name'],
+                    'address1': record1['address'],
+                    'address2': record2['address'],
+                    'label': 0
+                })
+            except Exception as e:
+                logger.warning(f"Failed to generate negative pair: {e}")
+                continue
 
-        return pd.DataFrame(pairs)
+        result_df = pd.DataFrame(pairs)
+        logger.info(f"Generated {len(result_df)} negative pairs (requested: {n_pairs})")
+
+        return result_df
 
     @staticmethod
     def generate_pairs(df: pd.DataFrame, n_positive: int, n_negative: int) -> pd.DataFrame:
         """Generate balanced positive and negative pairs."""
+        logger.info(f"Generating pairs: {n_positive} positive + {n_negative} negative")
+
         positive_pairs = PairGenerator.generate_positive_pairs(df, n_positive)
         negative_pairs = PairGenerator.generate_negative_pairs(df, n_negative)
 
         all_pairs = pd.concat([positive_pairs, negative_pairs], ignore_index=True)
 
-        # Return what all, even if less than requested
-        return all_pairs.sample(frac=1, random_state=42) if len(all_pairs) > 0 else all_pairs
+        # Shuffle pairs
+        if len(all_pairs) > 0:
+            all_pairs = all_pairs.sample(frac=1, random_state=42).reset_index(drop=True)
+
+        logger.info(f"Total pairs generated: {len(all_pairs)}")
+
+        return all_pairs
 
 
 def preprocess_dataset(df: pd.DataFrame, config: Dict) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Main preprocessing pipeline."""
-    print(f"[Preprocessing] Starting with {len(df)} base records")
+    """
+    Main preprocessing pipeline.
+
+    Args:
+        df: Input dataframe with raw records
+        config: Configuration dict with target_records, corruption rate, pairs config
+
+    Returns:
+        Tuple of (expanded_accounts_df, pairs_df)
+    """
+    logger.info(f"[Preprocessing] Starting with {len(df)} base records")
+
+    # Validate input
+    if len(df) == 0:
+        logger.warning("[Preprocessing] Empty input dataframe")
+        return df, pd.DataFrame(columns=['id1', 'id2', 'name1', 'name2', 'address1', 'address2', 'label'])
 
     # Step 1: Normalize values FIRST (before corruption)
-    print(f"[Preprocessing] Normalizing values...")
-    normalizer = DataNormalizer()
-    df = df.apply(normalizer.normalize_record, axis=1)
+    logger.info("[Preprocessing] Normalizing values...")
+    try:
+        normalizer = DataNormalizer()
+        df = df.apply(normalizer.normalize_record, axis=1)
+    except Exception as e:
+        logger.error(f"[Preprocessing] Normalization failed: {e}")
+        raise
 
     # Step 2: Expand dataset with corruption
-    target_size = config['target_records']
-    corruption_rate = config['corruption']['rate']
+    target_size = config.get('target_records', len(df))
+    corruption_rate = config.get('corruption', {}).get('rate', 0.15)
 
-    corruptor = DataCorruptor(corruption_rate)
-    expanded_df = corruptor.expand_dataset(df, target_size)
+    logger.info(f"[Preprocessing] Expanding to {target_size} records (corruption rate: {corruption_rate})")
 
-    print(f"[Preprocessing] Expanded to {len(expanded_df)} records")
+    try:
+        corruptor = DataCorruptor(corruption_rate)
+        expanded_df = corruptor.expand_dataset(df, target_size)
+    except Exception as e:
+        logger.error(f"[Preprocessing] Expansion failed: {e}")
+        raise
+
+    logger.info(f"[Preprocessing] Expanded to {len(expanded_df)} records")
 
     # Step 3: Generate pairs
-    pair_config = config['pairs']
-    pairs_df = PairGenerator.generate_pairs(
-        expanded_df,
-        pair_config['positive'],
-        pair_config['negative']
-    )
+    pair_config = config.get('pairs', {'positive': 1000, 'negative': 1000})
+    n_positive = pair_config.get('positive', 1000)
+    n_negative = pair_config.get('negative', 1000)
 
-    print(f"[Preprocessing] Generated {len(pairs_df)} pairs")
-    print(f"  - Positive: {pair_config['positive']}")
-    print(f"  - Negative: {pair_config['negative']}")
+    try:
+        pairs_df = PairGenerator.generate_pairs(expanded_df, n_positive, n_negative)
+    except Exception as e:
+        logger.error(f"[Preprocessing] Pair generation failed: {e}")
+        raise
+
+    logger.info(f"[Preprocessing] Generated {len(pairs_df)} pairs")
+    logger.info(f"  - Positive pairs: {(pairs_df['label'] == 1).sum()}")
+    logger.info(f"  - Negative pairs: {(pairs_df['label'] == 0).sum()}")
 
     return expanded_df, pairs_df
