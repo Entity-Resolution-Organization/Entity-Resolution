@@ -1,0 +1,161 @@
+active_dataset: "pseudopeople"
+
+datasets:
+  # ========== PERSON DATASETS (For LaundroGraph) ==========
+  pseudopeople:
+    name: "Pseudopeople Synthetic Population"
+    source_url: "https://github.com/ihmeuw/pseudopeople"
+    base_records: 100000
+    target_records: 6000000
+    schema:
+      - name
+      - address
+      - dob
+      - ssn
+    corruption:
+      rate: 0.15
+      name_variants: true
+      address_typos: true
+      date_formats: true
+    pairs:
+      total: 100000
+      positive: 50000
+      negative: 50000
+    bigquery_tables:
+      accounts: "laundrograph.accounts"
+      pairs: "laundrograph.er_pairs"
+
+  nc_voters:
+    name: "NC Voters Registry"
+    source_url: "https://dbs.uni-leipzig.de/research/projects/object_matching/"
+    base_records: 10000000
+    target_records: 6000000  # Subsample
+    schema:
+      - full_name
+      - street_address
+      - city
+      - state
+      - zip
+      - birth_year
+    corruption:
+      rate: 0.12
+      name_variants: true
+      address_typos: true
+      date_formats: false
+    pairs:
+      total: 100000
+      positive: 50000
+      negative: 50000
+    bigquery_tables:
+      accounts: "laundrograph.accounts"
+      pairs: "laundrograph.er_pairs"
+
+  ofac_sdn:
+    name: "OFAC Sanctions List"
+    source_url: "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.CSV"
+    base_records: 10000
+    target_records: 6000000  # Synthetic expansion
+    expansion_factor: 600
+    schema:
+      - name
+      - address
+      - nationality
+      - aliases
+    corruption:
+      rate: 0.20
+      name_variants: true
+      address_typos: true
+      date_formats: false
+    pairs:
+      total: 100000
+      positive: 50000
+      negative: 50000
+    bigquery_tables:
+      accounts: "laundrograph.accounts"
+      pairs: "laundrograph.er_pairs"
+
+  # ========== PRODUCT DATASETS (CatalogGraph) ==========
+  wdc_products:
+    name: "WDC Products Benchmark"
+    domain: "product"
+    source_url: "https://webdatacommons.org/largescaleproductcorpus/"
+    base_records: 548000
+    target_records: 1600000  # Simulate retailer fragmentation
+    schema:
+      - title
+      - brand
+      - price
+      - description
+      - category
+    corruption:
+      rate: 0.20
+      title_variants: true  # "iPhone 15" → "Apple iPhone 15"
+      price_noise: true     # $999 → $999.00
+      brand_omission: true  # Remove brand from title
+    pairs:
+      total: 100000
+      positive: 50000
+      negative: 50000
+    bigquery_tables:
+      products: "cataloggraph.products"
+      pairs: "cataloggraph.er_pairs"
+    graph:
+      type: "co_purchase"
+      edges: 964000
+
+  amazon_2018:
+    name: "Amazon Co-Purchase Network"
+    domain: "product"
+    source_url: "http://jmcauley.ucsd.edu/data/amazon/"
+    base_records: 548000
+    target_records: 1600000
+    schema:
+      - asin
+      - title
+      - brand
+      - price
+      - also_bought
+    corruption:
+      rate: 0.18
+      title_variants: true
+      price_noise: true
+      brand_omission: true
+    pairs:
+      total: 100000
+      positive: 50000
+      negative: 50000
+    bigquery_tables:
+      products: "cataloggraph.products"
+      pairs: "cataloggraph.er_pairs"
+      copurchase_edges: "cataloggraph.copurchase_graph"
+    graph:
+      type: "co_purchase"
+      edges: 964000
+
+  # ========== RESEARCH DATASETS (ScholarGraph) ==========
+  dblp_acm:
+    name: "DBLP-ACM Author Disambiguation"
+    domain: "research"
+    source_url: "https://dbs.uni-leipzig.de/research/projects/object_matching/"
+    base_records: 12000  # DBLP + ACM combined
+    target_records: 12000  # No expansion needed
+    schema:
+      - title
+      - authors
+      - venue
+      - year
+    corruption:
+      rate: 0.05  # Already has natural duplicates
+      author_variants: true  # "J. Smith" vs "John Smith"
+      venue_abbreviations: true
+    pairs:
+      total: 100000
+      positive: 50000
+      negative: 50000
+    bigquery_tables:
+      papers: "scholargraph.papers"
+      authors: "scholargraph.authors"
+      pairs: "scholargraph.er_pairs"
+    graph:
+      type: "coauthorship"
+      edges: 50000  # Estimated
