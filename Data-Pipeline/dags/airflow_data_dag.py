@@ -18,9 +18,9 @@ from dataset_factory import get_dataset_handler
 from preprocessing import preprocess_dataset
 
 # GCP Configuration
-GCP_PROJECT_ID = os.getenv('GCP_PROJECT_ID', 'project-id')
-GCS_BUCKET = os.getenv('GCS_BUCKET', 'laundrograph-data')
-BQ_DATASET = os.getenv('BQ_DATASET', 'laundrograph')
+GCP_PROJECT_ID = os.getenv('GCP_PROJECT_ID', 'entity-resolution-487121')
+GCS_BUCKET = os.getenv('GCS_BUCKET', 'entity-resolution-bucket-1')
+BQ_DATASET = os.getenv('BQ_DATASET', 'entity_resolution_bq')
 
 
 def load_data(**context):
@@ -136,7 +136,7 @@ default_args = {
 }
 
 with DAG(
-    dag_id="laundrograph_data_pipeline",
+    dag_id="er_data_pipeline",
     default_args=default_args,
     description="Data Pipeline with separate validation and transformation stages",
     schedule=None,
