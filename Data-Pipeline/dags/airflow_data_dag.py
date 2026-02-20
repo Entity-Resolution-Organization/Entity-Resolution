@@ -1,15 +1,17 @@
 """
 Entity Resolution Data Pipeline - Split Validation & Transformation
+Supports both local testing and GCS/BigQuery production mode.
 """
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
-from airflow.providers.google.cloud.transfers.local_to_gcs import LocalFilesystemToGCSOperator
+from airflow.operators.empty import EmptyOperator
 from datetime import datetime, timedelta
 import yaml
 import pandas as pd
 import os
 import sys
+import json
+from pathlib import Path
 
 # Add scripts to path
 sys.path.insert(0, '/opt/airflow/scripts')
@@ -18,10 +20,17 @@ from dataset_factory import get_dataset_handler
 from preprocessing import preprocess_dataset
 from bias_detection import BiasDetector
 
-# GCP Configuration
+# Mode Configuration - set LOCAL_MODE=true for local testing without GCS
+LOCAL_MODE = os.getenv('LOCAL_MODE', 'true').lower() == 'true'
+LOCAL_DATA_DIR = '/opt/airflow/data'
+
+# GCP Configuration (only used when LOCAL_MODE=false)
 GCP_PROJECT_ID = os.getenv('GCP_PROJECT_ID', 'project-id')
 GCS_BUCKET = os.getenv('GCS_BUCKET', 'laundrograph-data')
 BQ_DATASET = os.getenv('BQ_DATASET', 'laundrograph')
+
+# Local test configuration
+LOCAL_TEST_RECORDS = int(os.getenv('LOCAL_TEST_RECORDS', '1000'))
 
 
 def load_data(**context):
@@ -30,7 +39,12 @@ def load_data(**context):
         config = yaml.safe_load(f)
 
     active_dataset = config['active_dataset']
-    dataset_config = config['datasets'][active_dataset]
+    dataset_config = config['datasets'][active_dataset].copy()
+
+    # Override records count for local testing
+    if LOCAL_MODE:
+        dataset_config['base_records'] = LOCAL_TEST_RECORDS
+        print(f"[LOCAL MODE] Using {LOCAL_TEST_RECORDS} records for testing")
 
     print(f"Loading dataset: {active_dataset}")
 
@@ -40,16 +54,21 @@ def load_data(**context):
     raw_df = handler.normalize_schema(raw_df)
     raw_df = handler.subsample(raw_df)
 
-    # Save to GCS
-    gcs_path = f'gs://{GCS_BUCKET}/raw/data.parquet'
-    raw_df.to_parquet(gcs_path, index=False)
+    # Save to local or GCS
+    if LOCAL_MODE:
+        os.makedirs(f'{LOCAL_DATA_DIR}/raw', exist_ok=True)
+        data_path = f'{LOCAL_DATA_DIR}/raw/data.parquet'
+        raw_df.to_parquet(data_path, index=False)
+        print(f"[LOCAL MODE] Saved {len(raw_df)} records to {data_path}")
+    else:
+        data_path = f'gs://{GCS_BUCKET}/raw/data.parquet'
+        raw_df.to_parquet(data_path, index=False)
+        print(f"Loaded {len(raw_df)} records to {data_path}")
 
-    print(f"Loaded {len(raw_df)} records to {gcs_path}")
-
-    context['task_instance'].xcom_push(key='raw_data_path', value=gcs_path)
+    context['task_instance'].xcom_push(key='raw_data_path', value=data_path)
     context['task_instance'].xcom_push(key='dataset_config', value=dataset_config)
 
-    return gcs_path
+    return data_path
 
 
 def data_validation(**context):
@@ -83,11 +102,22 @@ def data_validation(**context):
 
     # Data quality metrics
     validation_results = {
+        'timestamp': datetime.now().isoformat(),
         'total_records': len(raw_df),
         'null_counts': null_counts.to_dict(),
+        'null_percentages': null_pct.to_dict(),
         'unique_ids': int(raw_df['id'].nunique()),
+        'unique_names': int(raw_df['name'].nunique()),
         'passed': True
     }
+
+    # Save validation results
+    if LOCAL_MODE:
+        os.makedirs(f'{LOCAL_DATA_DIR}/metrics', exist_ok=True)
+        validation_path = f'{LOCAL_DATA_DIR}/metrics/validation.json'
+        with open(validation_path, 'w') as f:
+            json.dump(validation_results, f, indent=2)
+        print(f"[Validation] Saved results to {validation_path}")
 
     print(f"[Validation] ✓ All checks passed")
 
@@ -102,7 +132,7 @@ def data_transformation(**context):
     raw_data_path = ti.xcom_pull(task_ids='load_data_task', key='raw_data_path')
     dataset_config = ti.xcom_pull(task_ids='load_data_task', key='dataset_config')
 
-    # Load raw data from GCS
+    # Load raw data
     raw_df = pd.read_parquet(raw_data_path)
     print(f"[Transformation] Processing {len(raw_df)} records from {raw_data_path}")
 
@@ -111,14 +141,20 @@ def data_transformation(**context):
 
     print(f"[Transformation] Generated {len(accounts_df)} accounts, {len(pairs_df)} pairs")
 
-    # Save to GCS
-    accounts_path = f'gs://{GCS_BUCKET}/processed/accounts.csv'
-    pairs_path = f'gs://{GCS_BUCKET}/processed/er_pairs.csv'
-
-    accounts_df.to_csv(accounts_path, index=False)
-    pairs_df.to_csv(pairs_path, index=False)
-
-    print(f"[Transformation] Saved to GCS: {accounts_path}, {pairs_path}")
+    # Save to local or GCS
+    if LOCAL_MODE:
+        os.makedirs(f'{LOCAL_DATA_DIR}/processed', exist_ok=True)
+        accounts_path = f'{LOCAL_DATA_DIR}/processed/accounts.csv'
+        pairs_path = f'{LOCAL_DATA_DIR}/processed/er_pairs.csv'
+        accounts_df.to_csv(accounts_path, index=False)
+        pairs_df.to_csv(pairs_path, index=False)
+        print(f"[LOCAL MODE] Saved to: {accounts_path}, {pairs_path}")
+    else:
+        accounts_path = f'gs://{GCS_BUCKET}/processed/accounts.csv'
+        pairs_path = f'gs://{GCS_BUCKET}/processed/er_pairs.csv'
+        accounts_df.to_csv(accounts_path, index=False)
+        pairs_df.to_csv(pairs_path, index=False)
+        print(f"[Transformation] Saved to GCS: {accounts_path}, {pairs_path}")
 
     ti.xcom_push(key='accounts_csv', value=accounts_path)
     ti.xcom_push(key='pairs_csv', value=pairs_path)
@@ -196,48 +232,55 @@ with DAG(
         python_callable=bias_detection,
     )
 
-    # No need for separate upload tasks - data is already in GCS
-    # Load directly from GCS to BigQuery
+    # Pipeline flow depends on mode
+    if LOCAL_MODE:
+        # Local mode: skip BigQuery tasks
+        pipeline_complete = EmptyOperator(
+            task_id='pipeline_complete',
+        )
+        load_data_task >> data_validation_task >> data_transformation_task >> bias_detection_task >> pipeline_complete
+    else:
+        # Production mode: load to BigQuery
+        from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
 
-    load_accounts_bq = BigQueryInsertJobOperator(
-        task_id='load_accounts_bigquery',
-        configuration={
-            'load': {
-                'sourceUris': [f'gs://{GCS_BUCKET}/processed/accounts.csv'],
-                'destinationTable': {
-                    'projectId': GCP_PROJECT_ID,
-                    'datasetId': BQ_DATASET,
-                    'tableId': 'accounts'
-                },
-                'sourceFormat': 'CSV',
-                'skipLeadingRows': 1,
-                'autodetect': True,
-                'writeDisposition': 'WRITE_TRUNCATE',
+        load_accounts_bq = BigQueryInsertJobOperator(
+            task_id='load_accounts_bigquery',
+            configuration={
+                'load': {
+                    'sourceUris': [f'gs://{GCS_BUCKET}/processed/accounts.csv'],
+                    'destinationTable': {
+                        'projectId': GCP_PROJECT_ID,
+                        'datasetId': BQ_DATASET,
+                        'tableId': 'accounts'
+                    },
+                    'sourceFormat': 'CSV',
+                    'skipLeadingRows': 1,
+                    'autodetect': True,
+                    'writeDisposition': 'WRITE_TRUNCATE',
+                }
             }
-        }
-    )
+        )
 
-    load_pairs_bq = BigQueryInsertJobOperator(
-        task_id='load_pairs_bigquery',
-        configuration={
-            'load': {
-                'sourceUris': [f'gs://{GCS_BUCKET}/processed/er_pairs.csv'],
-                'destinationTable': {
-                    'projectId': GCP_PROJECT_ID,
-                    'datasetId': BQ_DATASET,
-                    'tableId': 'er_pairs'
-                },
-                'sourceFormat': 'CSV',
-                'skipLeadingRows': 1,
-                'autodetect': True,
-                'writeDisposition': 'WRITE_TRUNCATE',
+        load_pairs_bq = BigQueryInsertJobOperator(
+            task_id='load_pairs_bigquery',
+            configuration={
+                'load': {
+                    'sourceUris': [f'gs://{GCS_BUCKET}/processed/er_pairs.csv'],
+                    'destinationTable': {
+                        'projectId': GCP_PROJECT_ID,
+                        'datasetId': BQ_DATASET,
+                        'tableId': 'er_pairs'
+                    },
+                    'sourceFormat': 'CSV',
+                    'skipLeadingRows': 1,
+                    'autodetect': True,
+                    'writeDisposition': 'WRITE_TRUNCATE',
+                }
             }
-        }
-    )
+        )
 
-    # Pipeline flow with bias detection
-    # load_data → validation → transformation → bias_detection → BigQuery loads
-    load_data_task >> data_validation_task >> data_transformation_task >> bias_detection_task >> [load_accounts_bq, load_pairs_bq]
+        # load_data → validation → transformation → bias_detection → BigQuery loads
+        load_data_task >> data_validation_task >> data_transformation_task >> bias_detection_task >> [load_accounts_bq, load_pairs_bq]
 
 
 if __name__ == "__main__":

@@ -47,5 +47,16 @@ build/
 .dvc/tmp
 .dvc/cache
 
-# Logs (keep directory structure)
+# Logs (keep directory structure, exclude Airflow runtime logs)
 logs/*.log
+logs/dag_id=*/
+logs/dag_processor_manager/
+logs/scheduler/
+
+# Runtime metrics (regenerated on each pipeline run)
+data/metrics/*.json
+data/metrics/*.png
+!/data/metrics/.gitkeep
+
+# DVC storage (local remote)
+dvc-storage/

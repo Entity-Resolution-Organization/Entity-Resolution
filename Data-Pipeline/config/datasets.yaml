@@ -5,8 +5,10 @@ datasets:
   pseudopeople:
     name: "Pseudopeople Synthetic Population"
     source_url: "https://github.com/ihmeuw/pseudopeople"
-    base_records: 100000
-    target_records: 6000000
+    # Development: 1K base → 50K expanded (runs in ~2-3 min)
+    # Production: Set base_records=100000, target_records=6000000
+    base_records: 1000
+    target_records: 50000
     schema:
       - name
       - address
@@ -18,9 +20,9 @@ datasets:
       address_typos: true
       date_formats: true
     pairs:
-      total: 100000
-      positive: 50000
-      negative: 50000
+      total: 1000
+      positive: 500
+      negative: 500
     bigquery_tables:
       accounts: "laundrograph.accounts"
       pairs: "laundrograph.er_pairs"

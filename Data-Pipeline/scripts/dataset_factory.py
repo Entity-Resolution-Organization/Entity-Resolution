@@ -428,8 +428,7 @@ class DBLPACMHandler(DatasetHandler):
 
         data = {
             'paper_id': range(1, base_count + 1),
-            'title': [f'{random.choice(topics)}: {random.choice(["A Novel Approach", "Deep Learning Methods", 
-                     "Scalable Algorithms", "Efficient Techniques"])}' for _ in range(base_count)],
+            'title': [f'{random.choice(topics)}: {random.choice(["A Novel Approach", "Deep Learning Methods", "Scalable Algorithms", "Efficient Techniques"])}' for _ in range(base_count)],
             'authors': [f'{random.choice(first_names)} {random.choice(last_names)}' for _ in range(base_count)],
             'venue': [random.choice(venues) for _ in range(base_count)],
             'year': [random.randint(2000, 2024) for _ in range(base_count)]
