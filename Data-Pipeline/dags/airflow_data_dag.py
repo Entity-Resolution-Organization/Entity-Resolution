@@ -1,17 +1,18 @@
 """
 Entity Resolution Data Pipeline - Split Validation & Transformation
-Supports both local testing and GCS/BigQuery production mode.
+Supports both local testing (LOCAL_MODE=true) and GCS/BigQuery production mode.
 """
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.empty import EmptyOperator
+from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
+from airflow.providers.google.cloud.transfers.local_to_gcs import LocalFilesystemToGCSOperator
 from datetime import datetime, timedelta
 import yaml
 import pandas as pd
 import os
 import sys
 import json
-from pathlib import Path
 
 # Add scripts to path
 sys.path.insert(0, '/opt/airflow/scripts')
@@ -20,17 +21,15 @@ from dataset_factory import get_dataset_handler
 from preprocessing import preprocess_dataset
 from bias_detection import BiasDetector
 
-# Mode Configuration - set LOCAL_MODE=true for local testing without GCS
+# Mode Configuration - set LOCAL_MODE=false for GCS/BigQuery production
 LOCAL_MODE = os.getenv('LOCAL_MODE', 'true').lower() == 'true'
 LOCAL_DATA_DIR = '/opt/airflow/data'
+TMP_DIR = '/tmp/laundrograph'
 
-# GCP Configuration (only used when LOCAL_MODE=false)
-GCP_PROJECT_ID = os.getenv('GCP_PROJECT_ID', 'project-id')
-GCS_BUCKET = os.getenv('GCS_BUCKET', 'laundrograph-data')
-BQ_DATASET = os.getenv('BQ_DATASET', 'laundrograph')
-
-# Local test configuration
-LOCAL_TEST_RECORDS = int(os.getenv('LOCAL_TEST_RECORDS', '1000'))
+# GCP Configuration (from dev branch - actual project settings)
+GCP_PROJECT_ID = os.getenv('GCP_PROJECT_ID', 'entity-resolution-487121')
+GCS_BUCKET = os.getenv('GCS_BUCKET', 'entity-resolution-bucket-1')
+BQ_DATASET = os.getenv('BQ_DATASET', 'entity_resolution_bq')
 
 
 def load_data(**context):
@@ -41,12 +40,8 @@ def load_data(**context):
     active_dataset = config['active_dataset']
     dataset_config = config['datasets'][active_dataset].copy()
 
-    # Override records count for local testing
-    if LOCAL_MODE:
-        dataset_config['base_records'] = LOCAL_TEST_RECORDS
-        print(f"[LOCAL MODE] Using {LOCAL_TEST_RECORDS} records for testing")
-
     print(f"Loading dataset: {active_dataset}")
+    print(f"[Mode] {'LOCAL' if LOCAL_MODE else 'PRODUCTION (GCS/BigQuery)'}")
 
     # Download data
     handler = get_dataset_handler(active_dataset, dataset_config)
@@ -54,16 +49,18 @@ def load_data(**context):
     raw_df = handler.normalize_schema(raw_df)
     raw_df = handler.subsample(raw_df)
 
-    # Save to local or GCS
+    # Save based on mode
     if LOCAL_MODE:
         os.makedirs(f'{LOCAL_DATA_DIR}/raw', exist_ok=True)
-        data_path = f'{LOCAL_DATA_DIR}/raw/data.parquet'
-        raw_df.to_parquet(data_path, index=False)
-        print(f"[LOCAL MODE] Saved {len(raw_df)} records to {data_path}")
+        data_path = f'{LOCAL_DATA_DIR}/raw/data.csv'
+        raw_df.to_csv(data_path, index=False)
+        print(f"[LOCAL] Saved {len(raw_df)} records to {data_path}")
     else:
-        data_path = f'gs://{GCS_BUCKET}/raw/data.parquet'
-        raw_df.to_parquet(data_path, index=False)
-        print(f"Loaded {len(raw_df)} records to {data_path}")
+        # Production: save to /tmp/ for later GCS upload
+        os.makedirs(TMP_DIR, exist_ok=True)
+        data_path = f'{TMP_DIR}/raw_data.csv'
+        raw_df.to_csv(data_path, index=False)
+        print(f"[PROD] Saved {len(raw_df)} records to {data_path}")
 
     context['task_instance'].xcom_push(key='raw_data_path', value=data_path)
     context['task_instance'].xcom_push(key='dataset_config', value=dataset_config)
@@ -76,10 +73,9 @@ def data_validation(**context):
     ti = context['task_instance']
 
     raw_data_path = ti.xcom_pull(task_ids='load_data_task', key='raw_data_path')
-    dataset_config = ti.xcom_pull(task_ids='load_data_task', key='dataset_config')
 
-    # Load raw data from GCS
-    raw_df = pd.read_parquet(raw_data_path)
+    # Load raw data
+    raw_df = pd.read_csv(raw_data_path)
     print(f"[Validation] Validating {len(raw_df)} records from {raw_data_path}")
 
     # Schema validation
@@ -112,12 +108,12 @@ def data_validation(**context):
     }
 
     # Save validation results
-    if LOCAL_MODE:
-        os.makedirs(f'{LOCAL_DATA_DIR}/metrics', exist_ok=True)
-        validation_path = f'{LOCAL_DATA_DIR}/metrics/validation.json'
-        with open(validation_path, 'w') as f:
-            json.dump(validation_results, f, indent=2)
-        print(f"[Validation] Saved results to {validation_path}")
+    metrics_dir = LOCAL_DATA_DIR + '/metrics' if LOCAL_MODE else TMP_DIR
+    os.makedirs(metrics_dir, exist_ok=True)
+    validation_path = f'{metrics_dir}/validation.json'
+    with open(validation_path, 'w') as f:
+        json.dump(validation_results, f, indent=2)
+    print(f"[Validation] Saved results to {validation_path}")
 
     print(f"[Validation] ✓ All checks passed")
 
@@ -133,7 +129,7 @@ def data_transformation(**context):
     dataset_config = ti.xcom_pull(task_ids='load_data_task', key='dataset_config')
 
     # Load raw data
-    raw_df = pd.read_parquet(raw_data_path)
+    raw_df = pd.read_csv(raw_data_path)
     print(f"[Transformation] Processing {len(raw_df)} records from {raw_data_path}")
 
     # Run preprocessing pipeline
@@ -141,20 +137,20 @@ def data_transformation(**context):
 
     print(f"[Transformation] Generated {len(accounts_df)} accounts, {len(pairs_df)} pairs")
 
-    # Save to local or GCS
+    # Save based on mode
     if LOCAL_MODE:
         os.makedirs(f'{LOCAL_DATA_DIR}/processed', exist_ok=True)
         accounts_path = f'{LOCAL_DATA_DIR}/processed/accounts.csv'
         pairs_path = f'{LOCAL_DATA_DIR}/processed/er_pairs.csv'
-        accounts_df.to_csv(accounts_path, index=False)
-        pairs_df.to_csv(pairs_path, index=False)
-        print(f"[LOCAL MODE] Saved to: {accounts_path}, {pairs_path}")
     else:
-        accounts_path = f'gs://{GCS_BUCKET}/processed/accounts.csv'
-        pairs_path = f'gs://{GCS_BUCKET}/processed/er_pairs.csv'
-        accounts_df.to_csv(accounts_path, index=False)
-        pairs_df.to_csv(pairs_path, index=False)
-        print(f"[Transformation] Saved to GCS: {accounts_path}, {pairs_path}")
+        # Production: save to /tmp/ for GCS upload
+        os.makedirs(TMP_DIR, exist_ok=True)
+        accounts_path = f'{TMP_DIR}/accounts.csv'
+        pairs_path = f'{TMP_DIR}/er_pairs.csv'
+
+    accounts_df.to_csv(accounts_path, index=False)
+    pairs_df.to_csv(pairs_path, index=False)
+    print(f"[Transformation] Saved to: {accounts_path}, {pairs_path}")
 
     ti.xcom_push(key='accounts_csv', value=accounts_path)
     ti.xcom_push(key='pairs_csv', value=pairs_path)
@@ -169,14 +165,15 @@ def bias_detection(**context):
     accounts_path = ti.xcom_pull(task_ids='data_transformation_task', key='accounts_csv')
     pairs_path = ti.xcom_pull(task_ids='data_transformation_task', key='pairs_csv')
 
-    # Load data from GCS
+    # Load data
     accounts_df = pd.read_csv(accounts_path)
     pairs_df = pd.read_csv(pairs_path)
 
     print(f"[Bias Detection] Analyzing {len(accounts_df)} accounts, {len(pairs_df)} pairs")
 
     # Run bias detection
-    detector = BiasDetector(output_dir='/opt/airflow/data/metrics')
+    metrics_dir = LOCAL_DATA_DIR + '/metrics' if LOCAL_MODE else TMP_DIR
+    detector = BiasDetector(output_dir=metrics_dir)
     report = detector.generate_bias_report(accounts_df, pairs_df)
 
     # Log summary
@@ -204,9 +201,9 @@ default_args = {
 }
 
 with DAG(
-    dag_id="laundrograph_data_pipeline",
+    dag_id="er_data_pipeline",
     default_args=default_args,
-    description="Data Pipeline with separate validation and transformation stages",
+    description="Entity Resolution Data Pipeline with validation, transformation, and bias detection",
     schedule=None,
     catchup=False,
     tags=["entity-resolution", "data-pipeline"],
@@ -234,14 +231,26 @@ with DAG(
 
     # Pipeline flow depends on mode
     if LOCAL_MODE:
-        # Local mode: skip BigQuery tasks
+        # Local mode: skip GCS/BigQuery tasks
         pipeline_complete = EmptyOperator(
             task_id='pipeline_complete',
         )
         load_data_task >> data_validation_task >> data_transformation_task >> bias_detection_task >> pipeline_complete
     else:
-        # Production mode: load to BigQuery
-        from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
+        # Production mode: upload to GCS, then load to BigQuery
+        upload_accounts = LocalFilesystemToGCSOperator(
+            task_id='upload_accounts_to_gcs',
+            src=f'{TMP_DIR}/accounts.csv',
+            dst='processed/accounts.csv',
+            bucket=GCS_BUCKET,
+        )
+
+        upload_pairs = LocalFilesystemToGCSOperator(
+            task_id='upload_pairs_to_gcs',
+            src=f'{TMP_DIR}/er_pairs.csv',
+            dst='processed/er_pairs.csv',
+            bucket=GCS_BUCKET,
+        )
 
         load_accounts_bq = BigQueryInsertJobOperator(
             task_id='load_accounts_bigquery',
@@ -279,8 +288,11 @@ with DAG(
             }
         )
 
-        # load_data → validation → transformation → bias_detection → BigQuery loads
-        load_data_task >> data_validation_task >> data_transformation_task >> bias_detection_task >> [load_accounts_bq, load_pairs_bq]
+        # Pipeline flow: load → validate → transform → bias → [upload to GCS] → [load to BigQuery]
+        load_data_task >> data_validation_task >> data_transformation_task >> bias_detection_task
+        bias_detection_task >> [upload_accounts, upload_pairs]
+        upload_accounts >> load_accounts_bq
+        upload_pairs >> load_pairs_bq
 
 
 if __name__ == "__main__":

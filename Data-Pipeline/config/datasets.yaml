@@ -5,8 +5,9 @@ datasets:
   pseudopeople:
     name: "Pseudopeople Synthetic Population"
     source_url: "https://github.com/ihmeuw/pseudopeople"
-    # Development: 1K base → 50K expanded (runs in ~2-3 min)
-    # Production: Set base_records=100000, target_records=6000000
+    # Quick GCS test: base=100, target=600 (~30 sec)
+    # Local dev test: base=1000, target=50000 (~2-3 min)
+    # Production: base=100000, target=6000000
     base_records: 1000
     target_records: 50000
     schema:
