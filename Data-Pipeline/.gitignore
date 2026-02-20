@@ -1,3 +1,51 @@
 # Env files can contain sensitive API keys and secrets later
 .env
-__pycache__
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+test_env/
+.venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Distribution
+dist/
+build/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# DVC - ignore data files but NOT .dvc files
+/data/raw/*.csv
+/data/raw/*.parquet
+/data/processed/*.csv
+/data/processed/*.parquet
+!/data/raw/.gitkeep
+!/data/processed/.gitkeep
+!/data/**/*.dvc
+.dvc/tmp
+.dvc/cache
+
+# Logs (keep directory structure)
+logs/*.log
