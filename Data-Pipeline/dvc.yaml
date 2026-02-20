@@ -56,15 +56,16 @@ stages:
   # ---------------------------------------------------------------------------
   # Stage 4: Bias Detection
   # ---------------------------------------------------------------------------
-  # detect_bias:
-  #   cmd: python scripts/bias_detection.py --input data/processed/pseudopeople_accounts.csv
-  #   deps:
-  #     - scripts/bias_detection.py
-  #     - data/processed/pseudopeople_accounts.csv
-  #   metrics:
-  #     - data/metrics/bias_report.json:
-  #         cache: false
-  #   desc: "Analyze data bias across entity types, languages, and sources"
+  detect_bias:
+    cmd: python scripts/bias_detection.py --accounts data/processed/pseudopeople_accounts.csv --pairs data/processed/pseudopeople_pairs.csv --output data/metrics
+    deps:
+      - scripts/bias_detection.py
+      - data/processed/pseudopeople_accounts.csv
+      - data/processed/pseudopeople_pairs.csv
+    metrics:
+      - data/metrics/bias_report.json:
+          cache: false
+    desc: "Analyze data bias across entity types, languages, geography, and label distribution"
 
 # =============================================================================
 # Pipeline Visualization:
@@ -75,9 +76,6 @@ stages:
 #   preprocess_data
 #        │
 #        ▼
-#   validate_data (TODO)
-#        │
-#        ▼
-#   detect_bias (TODO)
+#   detect_bias
 #
 # =============================================================================

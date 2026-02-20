@@ -16,6 +16,7 @@ sys.path.insert(0, '/opt/airflow/scripts')
 
 from dataset_factory import get_dataset_handler
 from preprocessing import preprocess_dataset
+from bias_detection import BiasDetector
 
 # GCP Configuration
 GCP_PROJECT_ID = os.getenv('GCP_PROJECT_ID', 'project-id')
@@ -125,6 +126,39 @@ def data_transformation(**context):
     return {'accounts': accounts_path, 'pairs': pairs_path}
 
 
+def bias_detection(**context):
+    """Detect bias in processed data."""
+    ti = context['task_instance']
+
+    accounts_path = ti.xcom_pull(task_ids='data_transformation_task', key='accounts_csv')
+    pairs_path = ti.xcom_pull(task_ids='data_transformation_task', key='pairs_csv')
+
+    # Load data from GCS
+    accounts_df = pd.read_csv(accounts_path)
+    pairs_df = pd.read_csv(pairs_path)
+
+    print(f"[Bias Detection] Analyzing {len(accounts_df)} accounts, {len(pairs_df)} pairs")
+
+    # Run bias detection
+    detector = BiasDetector(output_dir='/opt/airflow/data/metrics')
+    report = detector.generate_bias_report(accounts_df, pairs_df)
+
+    # Log summary
+    print(f"[Bias Detection] Overall risk: {report['summary']['overall_bias_risk']}")
+    print(f"[Bias Detection] Issues found: {report['summary']['total_issues']}")
+
+    if report['summary']['bias_issues']:
+        print(f"[Bias Detection] Affected areas: {', '.join(report['summary']['bias_issues'])}")
+
+    # Alert if high risk
+    if report['summary']['overall_bias_risk'] == 'HIGH':
+        print("[Bias Detection] WARNING: High bias risk detected! Review data sources.")
+
+    ti.xcom_push(key='bias_report', value=report)
+
+    return report
+
+
 # DAG configuration
 default_args = {
     "owner": "Entity Resolution Team",
@@ -155,6 +189,11 @@ with DAG(
     data_transformation_task = PythonOperator(
         task_id="data_transformation_task",
         python_callable=data_transformation,
+    )
+
+    bias_detection_task = PythonOperator(
+        task_id="bias_detection_task",
+        python_callable=bias_detection,
     )
 
     # No need for separate upload tasks - data is already in GCS
@@ -196,8 +235,9 @@ with DAG(
         }
     )
 
-    # Pipeline flow - simplified without separate upload tasks
-    load_data_task >> data_validation_task >> data_transformation_task >> [load_accounts_bq, load_pairs_bq]
+    # Pipeline flow with bias detection
+    # load_data → validation → transformation → bias_detection → BigQuery loads
+    load_data_task >> data_validation_task >> data_transformation_task >> bias_detection_task >> [load_accounts_bq, load_pairs_bq]
 
 
 if __name__ == "__main__":
