@@ -20,9 +20,11 @@ x-airflow-common: &airflow-common
     AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
     AIRFLOW__WEBSERVER__RBAC: 'true'
     # GCP Configuration (set these in .env file for production)
-    GCP_PROJECT_ID: ${GCP_PROJECT_ID:-project-id}
-    GCS_BUCKET: ${GCS_BUCKET:-laundrograph-data}
-    BQ_DATASET: ${BQ_DATASET:-laundrograph}
+    GCP_PROJECT_ID: ${GCP_PROJECT_ID:-entity-resolution-487121}
+    GCS_BUCKET: ${GCS_BUCKET:-entity-resolution-bucket-1}
+    BQ_DATASET: ${BQ_DATASET:-entity_resolution_bq}
+    # Pipeline Mode - set to "false" for GCS/BigQuery production
+    LOCAL_MODE: "true"
     # Python path for custom scripts
     PYTHONPATH: /opt/airflow/scripts
   volumes:

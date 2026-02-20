@@ -152,8 +152,8 @@ def data_transformation(**context):
     pairs_df.to_csv(pairs_path, index=False)
     print(f"[Transformation] Saved to: {accounts_path}, {pairs_path}")
 
-    ti.xcom_push(key='accounts_csv', value=accounts_csv)
-    ti.xcom_push(key='pairs_csv', value=pairs_csv)
+    ti.xcom_push(key='accounts_csv', value=accounts_path)
+    ti.xcom_push(key='pairs_csv', value=pairs_path)
 
     return {'accounts': accounts_path, 'pairs': pairs_path}
 
@@ -201,7 +201,6 @@ default_args = {
 }
 
 with DAG(
-    dag_id="er_data_pipeline",
     dag_id="er_data_pipeline",
     default_args=default_args,
     description="Entity Resolution Data Pipeline with validation, transformation, and bias detection",
