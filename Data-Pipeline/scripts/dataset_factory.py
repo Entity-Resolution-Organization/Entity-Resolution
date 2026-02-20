@@ -72,7 +72,7 @@ class PseudopeopleHandler(DatasetHandler):
             from google.cloud import storage
 
             client = storage.Client()
-            bucket_name = os.getenv('GCS_BUCKET', 'laundrograph-data')
+            bucket_name = os.getenv('GCS_BUCKET', 'entity-resolution-bucket-1')
             bucket = client.bucket(bucket_name)
             blob = bucket.blob('raw/pseudopeople.csv')
 
