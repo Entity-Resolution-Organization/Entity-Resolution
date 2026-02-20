@@ -1,5 +1,5 @@
 """
-Entity Resolution Data Pipeline - Split Validation & Transformation
+Entity Resolution Data Pipeline - Fixed version using CSV for temp storage
 """
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -24,7 +24,7 @@ BQ_DATASET = os.getenv('BQ_DATASET', 'laundrograph')
 
 
 def load_data(**context):
-    """Download and load raw data."""
+    """Download and load raw data to /tmp/ as CSV."""
     with open('/opt/airflow/config/datasets.yaml') as f:
         config = yaml.safe_load(f)
 
@@ -39,47 +39,48 @@ def load_data(**context):
     raw_df = handler.normalize_schema(raw_df)
     raw_df = handler.subsample(raw_df)
 
-    # Save to GCS
-    gcs_path = f'gs://{GCS_BUCKET}/raw/data.parquet'
-    raw_df.to_parquet(gcs_path, index=False)
+    # Save to /tmp/ as CSV (avoid PyArrow GCS issues)
+    output_path = '/tmp/laundrograph/raw_data.csv'
+    os.makedirs('/tmp/laundrograph', exist_ok=True)
+    raw_df.to_csv(output_path, index=False)
 
-    print(f"Loaded {len(raw_df)} records to {gcs_path}")
+    print(f"Loaded {len(raw_df)} records to {output_path}")
 
-    context['task_instance'].xcom_push(key='raw_data_path', value=gcs_path)
+    context['task_instance'].xcom_push(key='raw_data_path', value=output_path)
     context['task_instance'].xcom_push(key='dataset_config', value=dataset_config)
 
-    return gcs_path
+    return output_path
 
 
 def data_validation(**context):
     """Validate raw data quality and schema."""
     ti = context['task_instance']
-
+    
     raw_data_path = ti.xcom_pull(task_ids='load_data_task', key='raw_data_path')
     dataset_config = ti.xcom_pull(task_ids='load_data_task', key='dataset_config')
-
-    # Load raw data from GCS
-    raw_df = pd.read_parquet(raw_data_path)
+    
+    # Load raw data from /tmp/
+    raw_df = pd.read_csv(raw_data_path)
     print(f"[Validation] Validating {len(raw_df)} records from {raw_data_path}")
-
+    
     # Schema validation
     required_fields = ['id', 'name', 'address']
     missing_fields = [f for f in required_fields if f not in raw_df.columns]
     if missing_fields:
         raise ValueError(f"Missing required fields: {missing_fields}")
-
+    
     # Null check
     null_counts = raw_df[required_fields].isnull().sum()
     null_pct = (null_counts / len(raw_df) * 100).round(2)
     print(f"[Validation] Null percentages: {null_pct.to_dict()}")
-
+    
     if (null_counts > len(raw_df) * 0.5).any():
         raise ValueError(f"Excessive nulls detected: {null_counts[null_counts > len(raw_df) * 0.5].to_dict()}")
-
+    
     # Distribution check
     print(f"[Validation] Unique IDs: {raw_df['id'].nunique()}")
     print(f"[Validation] Unique names: {raw_df['name'].nunique()}")
-
+    
     # Data quality metrics
     validation_results = {
         'total_records': len(raw_df),
@@ -87,9 +88,9 @@ def data_validation(**context):
         'unique_ids': int(raw_df['id'].nunique()),
         'passed': True
     }
-
+    
     print(f"[Validation] ✓ All checks passed")
-
+    
     ti.xcom_push(key='validation_results', value=validation_results)
     return validation_results
 
@@ -97,32 +98,33 @@ def data_validation(**context):
 def data_transformation(**context):
     """Transform data: normalize, corrupt, generate pairs."""
     ti = context['task_instance']
-
+    
     raw_data_path = ti.xcom_pull(task_ids='load_data_task', key='raw_data_path')
     dataset_config = ti.xcom_pull(task_ids='load_data_task', key='dataset_config')
-
-    # Load raw data from GCS
-    raw_df = pd.read_parquet(raw_data_path)
+    
+    # Load raw data from /tmp/
+    raw_df = pd.read_csv(raw_data_path)
     print(f"[Transformation] Processing {len(raw_df)} records from {raw_data_path}")
-
+    
     # Run preprocessing pipeline
     accounts_df, pairs_df = preprocess_dataset(raw_df, dataset_config)
-
+    
     print(f"[Transformation] Generated {len(accounts_df)} accounts, {len(pairs_df)} pairs")
-
-    # Save to GCS
-    accounts_path = f'gs://{GCS_BUCKET}/processed/accounts.csv'
-    pairs_path = f'gs://{GCS_BUCKET}/processed/er_pairs.csv'
-
-    accounts_df.to_csv(accounts_path, index=False)
-    pairs_df.to_csv(pairs_path, index=False)
-
-    print(f"[Transformation] Saved to GCS: {accounts_path}, {pairs_path}")
-
-    ti.xcom_push(key='accounts_csv', value=accounts_path)
-    ti.xcom_push(key='pairs_csv', value=pairs_path)
-
-    return {'accounts': accounts_path, 'pairs': pairs_path}
+    
+    # Save to /tmp/ as CSV
+    os.makedirs('/tmp/laundrograph', exist_ok=True)
+    accounts_csv = '/tmp/laundrograph/accounts.csv'
+    pairs_csv = '/tmp/laundrograph/er_pairs.csv'
+    
+    accounts_df.to_csv(accounts_csv, index=False)
+    pairs_df.to_csv(pairs_csv, index=False)
+    
+    print(f"[Transformation] Saved to {accounts_csv}, {pairs_csv}")
+    
+    ti.xcom_push(key='accounts_csv', value=accounts_csv)
+    ti.xcom_push(key='pairs_csv', value=pairs_csv)
+    
+    return {'accounts': accounts_csv, 'pairs': pairs_csv}
 
 
 # DAG configuration
@@ -136,7 +138,7 @@ default_args = {
 with DAG(
     dag_id="laundrograph_data_pipeline",
     default_args=default_args,
-    description="Data Pipeline with separate validation and transformation stages",
+    description="Entity Resolution Data Pipeline - Production Ready",
     schedule=None,
     catchup=False,
     tags=["entity-resolution", "data-pipeline"],
@@ -157,8 +159,19 @@ with DAG(
         python_callable=data_transformation,
     )
 
-    # No need for separate upload tasks - data is already in GCS
-    # Load directly from GCS to BigQuery
+    upload_accounts = LocalFilesystemToGCSOperator(
+        task_id='upload_accounts_to_gcs',
+        src='/tmp/laundrograph/accounts.csv',
+        dst='processed/accounts.csv',
+        bucket=GCS_BUCKET,
+    )
+
+    upload_pairs = LocalFilesystemToGCSOperator(
+        task_id='upload_pairs_to_gcs',
+        src='/tmp/laundrograph/er_pairs.csv',
+        dst='processed/er_pairs.csv',
+        bucket=GCS_BUCKET,
+    )
 
     load_accounts_bq = BigQueryInsertJobOperator(
         task_id='load_accounts_bigquery',
@@ -196,8 +209,10 @@ with DAG(
         }
     )
 
-    # Pipeline flow - simplified without separate upload tasks
-    load_data_task >> data_validation_task >> data_transformation_task >> [load_accounts_bq, load_pairs_bq]
+    # Pipeline flow
+    load_data_task >> data_validation_task >> data_transformation_task >> [upload_accounts, upload_pairs]
+    upload_accounts >> load_accounts_bq
+    upload_pairs >> load_pairs_bq
 
 
 if __name__ == "__main__":

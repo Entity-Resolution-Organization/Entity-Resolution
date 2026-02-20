@@ -5,8 +5,8 @@ datasets:
   pseudopeople:
     name: "Pseudopeople Synthetic Population"
     source_url: "https://github.com/ihmeuw/pseudopeople"
-    base_records: 100000
-    target_records: 6000000
+    base_records: 100
+    target_records: 600
     schema:
       - name
       - address
@@ -28,7 +28,7 @@ datasets:
   nc_voters:
     name: "NC Voters Registry"
     source_url: "https://dbs.uni-leipzig.de/research/projects/object_matching/"
-    base_records: 10000000
+    base_records: 10000
     target_records: 6000000  # Subsample
     schema:
       - full_name

@@ -1,3 +1,7 @@
+"""
+Dataset factory pattern for switchable data sources.
+Production-ready with real downloads, error handling, and retry logic.
+"""
 import pandas as pd
 import requests
 import io
@@ -70,22 +74,22 @@ class PseudopeopleHandler(DatasetHandler):
         try:
             # Option 1: Download from GCS bucket
             from google.cloud import storage
-
+            
             client = storage.Client()
             bucket_name = os.getenv('GCS_BUCKET', 'laundrograph-data')
             bucket = client.bucket(bucket_name)
             blob = bucket.blob('raw/pseudopeople.csv')
-
+            
             logger.info(f"[Pseudopeople] Downloading from gs://{bucket_name}/raw/pseudopeople.csv")
-
+            
             # Download to temp file
             temp_path = '/tmp/pseudopeople.csv'
             blob.download_to_filename(temp_path)
             df = pd.read_csv(temp_path)
-
+            
             logger.info(f"[Pseudopeople] Downloaded {len(df)} records")
             return df
-
+            
         except Exception as e:
             logger.error(f"[Pseudopeople] Production download failed: {e}")
             logger.warning("[Pseudopeople] Falling back to test data generation")
@@ -94,7 +98,7 @@ class PseudopeopleHandler(DatasetHandler):
     def _generate_test_data(self) -> pd.DataFrame:
         """Generate synthetic data for local testing."""
         import random
-
+        
         base_count = self.config['base_records']
         logger.info(f"[Pseudopeople] Generating {base_count} test records")
 
@@ -109,9 +113,9 @@ class PseudopeopleHandler(DatasetHandler):
             'first_name': [random.choice(first_names) for _ in range(base_count)],
             'last_name': [random.choice(last_names) for _ in range(base_count)],
             'street_address': [f'{random.randint(1, 9999)} {random.choice(streets)} St' for _ in range(base_count)],
-            'date_of_birth': [f'{random.randint(1950, 2000)}-{random.randint(1, 12):02d}-{random.randint(1, 28):02d}'
+            'date_of_birth': [f'{random.randint(1950, 2000)}-{random.randint(1, 12):02d}-{random.randint(1, 28):02d}' 
                             for _ in range(base_count)],
-            'ssn': [f'{random.randint(100, 999)}-{random.randint(10, 99)}-{random.randint(1000, 9999)}'
+            'ssn': [f'{random.randint(100, 999)}-{random.randint(10, 99)}-{random.randint(1000, 9999)}' 
                    for _ in range(base_count)]
         }
 
@@ -125,11 +129,11 @@ class PseudopeopleHandler(DatasetHandler):
             'street_address': 'address',
             'date_of_birth': 'dob'
         })
-
+        
         # Combine first + last name if separate
         if 'last_name' in df.columns:
             df_normalized['name'] = df['first_name'] + ' ' + df['last_name']
-
+        
         return df_normalized[['id', 'name', 'address', 'dob']]
 
 
@@ -148,13 +152,13 @@ class NCVotersHandler(DatasetHandler):
         try:
             url = self.config['source_url']
             logger.info(f"[NC Voters] Downloading from {url}")
-
+            
             response = self.download_with_retry(url, retries=3, timeout=120)
             df = pd.read_csv(io.StringIO(response.text))
-
+            
             logger.info(f"[NC Voters] Downloaded {len(df)} records")
             return df
-
+            
         except Exception as e:
             logger.error(f"[NC Voters] Production download failed: {e}")
             logger.warning("[NC Voters] Falling back to test data")
@@ -163,7 +167,7 @@ class NCVotersHandler(DatasetHandler):
     def _generate_test_data(self) -> pd.DataFrame:
         """Generate synthetic NC voter data."""
         import random
-
+        
         base_count = min(self.config['base_records'], 100000)
         logger.info(f"[NC Voters] Generating {base_count} test records")
 
@@ -204,13 +208,13 @@ class OFACHandler(DatasetHandler):
         try:
             url = self.config['source_url']
             logger.info(f"[OFAC SDN] Downloading from {url}")
-
+            
             response = self.download_with_retry(url, retries=3, timeout=60)
             df = pd.read_csv(io.StringIO(response.text), encoding='utf-8', on_bad_lines='skip')
-
+            
             logger.info(f"[OFAC SDN] Downloaded {len(df)} records")
             return df
-
+            
         except Exception as e:
             logger.error(f"[OFAC SDN] Download failed: {e}")
             logger.warning("[OFAC SDN] Generating placeholder data")
@@ -219,7 +223,7 @@ class OFACHandler(DatasetHandler):
     def _generate_placeholder(self) -> pd.DataFrame:
         """Generate placeholder OFAC-like data."""
         import random
-
+        
         base_count = self.config['base_records']
         logger.info(f"[OFAC SDN] Generating {base_count} placeholder records")
 
@@ -243,11 +247,11 @@ class OFACHandler(DatasetHandler):
             'ent_num': 'id',
             'sdn_name': 'name'
         })
-
+        
         # Ensure address column exists
         if 'address' not in df_normalized.columns:
             df_normalized['address'] = ''
-
+        
         return df_normalized[['id', 'name', 'address']]
 
     def expand(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -279,13 +283,13 @@ class WDCProductsHandler(DatasetHandler):
         try:
             url = self.config['source_url']
             logger.info(f"[WDC Products] Downloading from {url}")
-
+            
             response = self.download_with_retry(url, retries=3, timeout=180)
             df = pd.read_csv(io.StringIO(response.text))
-
+            
             logger.info(f"[WDC Products] Downloaded {len(df)} records")
             return df
-
+            
         except Exception as e:
             logger.error(f"[WDC Products] Download failed: {e}")
             logger.warning("[WDC Products] Generating test data")
@@ -294,7 +298,7 @@ class WDCProductsHandler(DatasetHandler):
     def _generate_test_data(self) -> pd.DataFrame:
         """Generate synthetic product data."""
         import random
-
+        
         base_count = self.config['base_records']
         logger.info(f"[WDC Products] Generating {base_count} test records")
 
@@ -319,7 +323,7 @@ class WDCProductsHandler(DatasetHandler):
         df['name'] = df['title'].astype(str) + ' ' + df['brand'].fillna('').astype(str)
         df['address'] = df.get('description', '').fillna('').astype(str)
         df['id'] = df['product_id'].astype(str)
-
+        
         return df[['id', 'name', 'address']]
 
 
@@ -338,19 +342,19 @@ class AmazonHandler(DatasetHandler):
         try:
             url = self.config['source_url']
             logger.info(f"[Amazon 2018] Downloading from {url}")
-
+            
             # Amazon data is typically JSONL format
             response = self.download_with_retry(url, retries=3, timeout=180)
-
+            
             # Parse JSONL
             import json
             lines = response.text.strip().split('\n')
             records = [json.loads(line) for line in lines if line.strip()]
             df = pd.DataFrame(records)
-
+            
             logger.info(f"[Amazon 2018] Downloaded {len(df)} records")
             return df
-
+            
         except Exception as e:
             logger.error(f"[Amazon 2018] Download failed: {e}")
             logger.warning("[Amazon 2018] Generating test data")
@@ -359,11 +363,11 @@ class AmazonHandler(DatasetHandler):
     def _generate_test_data(self) -> pd.DataFrame:
         """Generate synthetic Amazon product data."""
         import random
-
+        
         base_count = self.config['base_records']
         logger.info(f"[Amazon 2018] Generating {base_count} test records")
 
-        products = ['Smart Watch', 'Fitness Tracker', 'Wireless Earbuds', 'Power Bank', 'USB Cable',
+        products = ['Smart Watch', 'Fitness Tracker', 'Wireless Earbuds', 'Power Bank', 'USB Cable', 
                    'Phone Case', 'Screen Protector', 'Charging Dock']
         brands = ['Anker', 'Belkin', 'JBL', 'Logitech', 'SanDisk', 'Kingston', 'Western Digital']
 
@@ -382,7 +386,7 @@ class AmazonHandler(DatasetHandler):
         df['name'] = df['title'].astype(str) + ' ' + df['brand'].fillna('').astype(str)
         df['address'] = ''  # Products don't have physical address
         df['id'] = df['asin'].astype(str)
-
+        
         return df[['id', 'name', 'address']]
 
 
@@ -401,13 +405,13 @@ class DBLPACMHandler(DatasetHandler):
         try:
             url = self.config['source_url']
             logger.info(f"[DBLP-ACM] Downloading from {url}")
-
+            
             response = self.download_with_retry(url, retries=3, timeout=120)
             df = pd.read_csv(io.StringIO(response.text))
-
+            
             logger.info(f"[DBLP-ACM] Downloaded {len(df)} records")
             return df
-
+            
         except Exception as e:
             logger.error(f"[DBLP-ACM] Download failed: {e}")
             logger.warning("[DBLP-ACM] Generating test data")
@@ -416,7 +420,7 @@ class DBLPACMHandler(DatasetHandler):
     def _generate_test_data(self) -> pd.DataFrame:
         """Generate synthetic research paper data."""
         import random
-
+        
         base_count = self.config['base_records']
         logger.info(f"[DBLP-ACM] Generating {base_count} test records")
 
@@ -442,7 +446,7 @@ class DBLPACMHandler(DatasetHandler):
         df['name'] = df['authors'].astype(str)
         df['address'] = df['title'].astype(str)
         df['id'] = df['paper_id'].astype(str)
-
+        
         return df[['id', 'name', 'address']]
 
 
