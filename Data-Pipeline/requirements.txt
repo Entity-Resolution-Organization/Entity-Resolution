@@ -1,0 +1,7 @@
+apache-airflow==3.1.7
+numpy==2.4.2
+pandas==3.0.1
+protobuf==6.33.5
+pytest==9.0.2
+PyYAML==6.0.3
+Requests==2.32.5
