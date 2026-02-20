@@ -20,6 +20,7 @@ sys.path.insert(0, '/opt/airflow/scripts')
 from dataset_factory import get_dataset_handler
 from preprocessing import preprocess_dataset
 from bias_detection import BiasDetector
+from schema_validation import SchemaValidator
 
 # Mode Configuration - set LOCAL_MODE=false for GCS/BigQuery production
 LOCAL_MODE = os.getenv('LOCAL_MODE', 'true').lower() == 'true'
@@ -158,6 +159,46 @@ def data_transformation(**context):
     return {'accounts': accounts_path, 'pairs': pairs_path}
 
 
+def schema_validation(**context):
+    """Validate schema and data quality for processed data."""
+    ti = context['task_instance']
+
+    accounts_path = ti.xcom_pull(task_ids='data_transformation_task', key='accounts_csv')
+    pairs_path = ti.xcom_pull(task_ids='data_transformation_task', key='pairs_csv')
+
+    # Load data
+    accounts_df = pd.read_csv(accounts_path)
+    pairs_df = pd.read_csv(pairs_path)
+
+    print(f"[Schema Validation] Validating {len(accounts_df)} accounts, {len(pairs_df)} pairs")
+
+    # Run validation
+    metrics_dir = LOCAL_DATA_DIR + '/metrics' if LOCAL_MODE else TMP_DIR
+    validator = SchemaValidator(output_dir=metrics_dir)
+    results = validator.validate_all(accounts_df, pairs_df)
+
+    # Save results
+    validator.save_results(results)
+
+    # Log summary
+    print(f"[Schema Validation] Overall success: {results['overall_success']}")
+    print(f"[Schema Validation] Accounts: {results['accounts_validation']['statistics']['success_rate']}% pass rate")
+    print(f"[Schema Validation] Pairs: {results['pairs_validation']['statistics']['success_rate']}% pass rate")
+
+    if not results['overall_success']:
+        failed_count = results['summary']['failed_expectations']
+        print(f"[Schema Validation] WARNING: {failed_count} expectations failed!")
+        # Log failed expectations for debugging
+        for exp in results['accounts_validation']['failed_expectations']:
+            print(f"  - Accounts: {exp['expectation']} failed")
+        for exp in results['pairs_validation']['failed_expectations']:
+            print(f"  - Pairs: {exp['expectation']} failed")
+
+    ti.xcom_push(key='schema_validation_results', value=results)
+
+    return results
+
+
 def bias_detection(**context):
     """Detect bias in processed data."""
     ti = context['task_instance']
@@ -224,6 +265,11 @@ with DAG(
         python_callable=data_transformation,
     )
 
+    schema_validation_task = PythonOperator(
+        task_id="schema_validation_task",
+        python_callable=schema_validation,
+    )
+
     bias_detection_task = PythonOperator(
         task_id="bias_detection_task",
         python_callable=bias_detection,
@@ -235,7 +281,7 @@ with DAG(
         pipeline_complete = EmptyOperator(
             task_id='pipeline_complete',
         )
-        load_data_task >> data_validation_task >> data_transformation_task >> bias_detection_task >> pipeline_complete
+        load_data_task >> data_validation_task >> data_transformation_task >> schema_validation_task >> bias_detection_task >> pipeline_complete
     else:
         # Production mode: upload to GCS, then load to BigQuery
         upload_accounts = LocalFilesystemToGCSOperator(
@@ -288,8 +334,8 @@ with DAG(
             }
         )
 
-        # Pipeline flow: load → validate → transform → bias → [upload to GCS] → [load to BigQuery]
-        load_data_task >> data_validation_task >> data_transformation_task >> bias_detection_task
+        # Pipeline flow: load → validate → transform → schema_validation → bias → [upload to GCS] → [load to BigQuery]
+        load_data_task >> data_validation_task >> data_transformation_task >> schema_validation_task >> bias_detection_task
         bias_detection_task >> [upload_accounts, upload_pairs]
         upload_accounts >> load_accounts_bq
         upload_pairs >> load_pairs_bq

@@ -43,15 +43,16 @@ stages:
   # ---------------------------------------------------------------------------
   # Stage 3: Validate Data Quality
   # ---------------------------------------------------------------------------
-  # validate_data:
-  #   cmd: python scripts/validate_data.py --input data/processed/
-  #   deps:
-  #     - data/processed/pseudopeople_accounts.csv
-  #     - data/processed/pseudopeople_pairs.csv
-  #   metrics:
-  #     - data/metrics/validation_report.json:
-  #         cache: false
-  #   desc: "Validate schema and data quality"
+  validate_data:
+    cmd: python scripts/schema_validation.py --accounts data/processed/pseudopeople_accounts.csv --pairs data/processed/pseudopeople_pairs.csv --output data/metrics
+    deps:
+      - scripts/schema_validation.py
+      - data/processed/pseudopeople_accounts.csv
+      - data/processed/pseudopeople_pairs.csv
+    metrics:
+      - data/metrics/schema_validation_results.json:
+          cache: false
+    desc: "Validate schema and data quality"
 
   # ---------------------------------------------------------------------------
   # Stage 4: Bias Detection
@@ -74,6 +75,9 @@ stages:
 #        │
 #        ▼
 #   preprocess_data
+#        │
+#        ▼
+#   validate_data
 #        │
 #        ▼
 #   detect_bias
