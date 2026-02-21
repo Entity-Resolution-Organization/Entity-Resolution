@@ -304,20 +304,15 @@ class OFACHandler(DatasetHandler):
             url = self.config["source_url"]
             logger.info(f"[OFAC SDN] Downloading from {url}")
 
-            # Use requests with proper headers to avoid blocking
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-            }
-            response = requests.get(
-                url, headers=headers, timeout=60, allow_redirects=True
-            )
-            response.raise_for_status()
+            # Use download_with_retry for robustness
+            response = self.download_with_retry(url, retries=3, timeout=60)
 
             # Parse CSV - OFAC file has no header row
             df = pd.read_csv(
                 io.StringIO(response.text),
-                names=self.OFAC_COLUMNS,
                 encoding="utf-8",
+                header=None,
+                names=self.OFAC_COLUMNS,
                 on_bad_lines="skip",
                 quotechar='"',
             )
@@ -325,7 +320,6 @@ class OFACHandler(DatasetHandler):
             # Clean up -0- placeholder values
             df = df.replace("-0-", "")
             df = df.replace("-0- ", "")
-
             logger.info(f"[OFAC SDN] Downloaded {len(df)} records")
             return df
 
@@ -425,17 +419,14 @@ class OFACHandler(DatasetHandler):
         """Map OFAC SDN to standard schema."""
         df_normalized = pd.DataFrame()
 
-        # Map columns
+        # Map columns (using lowercase names from OFAC_COLUMNS)
         df_normalized["id"] = df["ent_num"].astype(str)
         df_normalized["name"] = df["sdn_name"].fillna("").astype(str)
 
-        # Extract address from remarks or use program as location context
-        if "remarks" in df.columns:
-            df_normalized["address"] = df["remarks"].fillna("").astype(str)
-        elif "program" in df.columns:
-            df_normalized["address"] = df["program"].fillna("").astype(str)
-        else:
-            df_normalized["address"] = ""
+        # Combine program and title for address context
+        df_normalized["address"] = (
+            df["program"].fillna("") + " " + df["title"].fillna("")
+        ).str.strip()
 
         return df_normalized[["id", "name", "address"]]
 

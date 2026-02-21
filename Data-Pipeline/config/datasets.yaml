@@ -72,11 +72,11 @@ datasets:
   ofac_sdn:
     name: "OFAC Sanctions List"
     entity_type: "PERSON"
-    # Treasury direct download URL (stable endpoint)
-    source_url: "https://www.treasury.gov/ofac/downloads/sdn.csv"
-    base_records: 5000
+    # Updated OFAC API endpoint (more reliable)
+    source_url: "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.CSV"
+    base_records: 500
     target_records: 50000
-    expansion_factor: 3
+    expansion_factor: 100
     schema:
       - name
       - address
