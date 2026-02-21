@@ -1,4 +1,4 @@
-active_dataset: "pseudopeople"
+active_dataset: "ofac_sdn"
 
 datasets:
   # ========== PERSON DATASETS (For LaundroGraph) ==========
@@ -53,9 +53,9 @@ datasets:
   ofac_sdn:
     name: "OFAC Sanctions List"
     source_url: "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.CSV"
-    base_records: 10000
-    target_records: 6000000  # Synthetic expansion
-    expansion_factor: 600
+    base_records: 100
+    target_records: 5000  # Synthetic expansion
+    expansion_factor: 50
     schema:
       - name
       - address
@@ -67,9 +67,9 @@ datasets:
       address_typos: true
       date_formats: false
     pairs:
-      total: 100000
-      positive: 50000
-      negative: 50000
+      total: 1000
+      positive: 500
+      negative: 500
     bigquery_tables:
       accounts: "laundrograph.accounts"
       pairs: "laundrograph.er_pairs"
