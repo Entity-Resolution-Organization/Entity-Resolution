@@ -206,8 +206,14 @@ class OFACHandler(DatasetHandler):
             logger.info(f"[OFAC SDN] Downloading from {url}")
 
             response = self.download_with_retry(url, retries=3, timeout=60)
-            df = pd.read_csv(io.StringIO(response.text), encoding='utf-8', on_bad_lines='skip')
-
+            df = pd.read_csv(
+                io.StringIO(response.text),
+                encoding='utf-8',
+                header=None,  # No header row!
+                names=['ent_num', 'SDN_Name', 'SDN_Type', 'Program', 'Title', 'Call_Sign', 'Vess_type', 'Tonnage',
+                       'GRT', 'Vess_flag', 'Vess_owner', 'Remarks'],
+                on_bad_lines='skip'
+            )
             logger.info(f"[OFAC SDN] Downloaded {len(df)} records")
             return df
 
@@ -239,16 +245,11 @@ class OFACHandler(DatasetHandler):
 
     def normalize_schema(self, df: pd.DataFrame) -> pd.DataFrame:
         """Map to standard schema."""
-        df_normalized = df.rename(columns={
-            'ent_num': 'id',
-            'sdn_name': 'name'
-        })
+        df['id'] = df['ent_num'].astype(str)
+        df['name'] = df['SDN_Name'].fillna('')
+        df['address'] = df['Program'].fillna('') + ' ' + df['Title'].fillna('')
 
-        # Ensure address column exists
-        if 'address' not in df_normalized.columns:
-            df_normalized['address'] = ''
-
-        return df_normalized[['id', 'name', 'address']]
+        return df[['id', 'name', 'address']]
 
     def expand(self, df: pd.DataFrame) -> pd.DataFrame:
         """Synthetically expand small dataset to target size."""
