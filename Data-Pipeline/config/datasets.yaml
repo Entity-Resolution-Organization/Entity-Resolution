@@ -1,12 +1,30 @@
-active_dataset: "ofac_sdn"
+# =============================================================================
+# Multi-Domain Entity Resolution Dataset Configuration
+# =============================================================================
+# PRODUCTION CONFIG: 50K records per dataset for model training
+# Supports 6 datasets across 3 entity types for LoRA adapter training
+# =============================================================================
+
+# Active datasets to process (array for multi-domain support)
+active_datasets:
+  - "pseudopeople"   # PERSON
+  - "nc_voters"      # PERSON
+  - "ofac_sdn"       # PERSON
+  - "wdc_products"   # PRODUCT
+  - "amazon_2018"    # PRODUCT
+  - "dblp_acm"       # PUBLICATION
+
+# Legacy single dataset support (for backward compatibility)
+active_dataset: "pseudopeople"
 
 datasets:
-  # ========== PERSON DATASETS (For LaundroGraph) ==========
+  # ========== PERSON DATASETS (3 sources) ==========
   pseudopeople:
     name: "Pseudopeople Synthetic Population"
+    entity_type: "PERSON"
     source_url: "https://github.com/ihmeuw/pseudopeople"
-    base_records: 100
-    target_records: 600
+    base_records: 5000
+    target_records: 50000
     schema:
       - name
       - address
@@ -18,18 +36,19 @@ datasets:
       address_typos: true
       date_formats: true
     pairs:
-      total: 100000
-      positive: 50000
-      negative: 50000
+      total: 10000
+      positive: 5000
+      negative: 5000
     bigquery_tables:
       accounts: "laundrograph.accounts"
       pairs: "laundrograph.er_pairs"
 
   nc_voters:
     name: "NC Voters Registry"
+    entity_type: "PERSON"
     source_url: "https://dbs.uni-leipzig.de/research/projects/object_matching/"
-    base_records: 10000000
-    target_records: 6000000  # Subsample
+    base_records: 5000
+    target_records: 50000
     schema:
       - full_name
       - street_address
@@ -43,19 +62,21 @@ datasets:
       address_typos: true
       date_formats: false
     pairs:
-      total: 100000
-      positive: 50000
-      negative: 50000
+      total: 10000
+      positive: 5000
+      negative: 5000
     bigquery_tables:
       accounts: "laundrograph.accounts"
       pairs: "laundrograph.er_pairs"
 
   ofac_sdn:
     name: "OFAC Sanctions List"
+    entity_type: "PERSON"
+    # Updated OFAC API endpoint (more reliable)
     source_url: "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.CSV"
-    base_records: 100
-    target_records: 5000  # Synthetic expansion
-    expansion_factor: 50
+    base_records: 500
+    target_records: 50000
+    expansion_factor: 100
     schema:
       - name
       - address
@@ -67,20 +88,20 @@ datasets:
       address_typos: true
       date_formats: false
     pairs:
-      total: 1000
-      positive: 500
-      negative: 500
+      total: 10000
+      positive: 5000
+      negative: 5000
     bigquery_tables:
       accounts: "laundrograph.accounts"
       pairs: "laundrograph.er_pairs"
 
-  # ========== PRODUCT DATASETS (CatalogGraph) ==========
+  # ========== PRODUCT DATASETS (2 sources) ==========
   wdc_products:
     name: "WDC Products Benchmark"
-    domain: "product"
+    entity_type: "PRODUCT"
     source_url: "https://webdatacommons.org/largescaleproductcorpus/"
-    base_records: 548000
-    target_records: 1600000  # Simulate retailer fragmentation
+    base_records: 5000
+    target_records: 50000
     schema:
       - title
       - brand
@@ -89,26 +110,26 @@ datasets:
       - category
     corruption:
       rate: 0.20
-      title_variants: true  # "iPhone 15" → "Apple iPhone 15"
-      price_noise: true     # $999 → $999.00
-      brand_omission: true  # Remove brand from title
+      title_variants: true
+      price_noise: true
+      brand_omission: true
     pairs:
-      total: 100000
-      positive: 50000
-      negative: 50000
+      total: 10000
+      positive: 5000
+      negative: 5000
     bigquery_tables:
       products: "cataloggraph.products"
       pairs: "cataloggraph.er_pairs"
     graph:
       type: "co_purchase"
-      edges: 964000
+      edges: 50000
 
   amazon_2018:
     name: "Amazon Co-Purchase Network"
-    domain: "product"
+    entity_type: "PRODUCT"
     source_url: "http://jmcauley.ucsd.edu/data/amazon/"
-    base_records: 548000
-    target_records: 1600000
+    base_records: 5000
+    target_records: 50000
     schema:
       - asin
       - title
@@ -121,41 +142,49 @@ datasets:
       price_noise: true
       brand_omission: true
     pairs:
-      total: 100000
-      positive: 50000
-      negative: 50000
+      total: 10000
+      positive: 5000
+      negative: 5000
     bigquery_tables:
       products: "cataloggraph.products"
       pairs: "cataloggraph.er_pairs"
       copurchase_edges: "cataloggraph.copurchase_graph"
     graph:
       type: "co_purchase"
-      edges: 964000
+      edges: 50000
 
-  # ========== RESEARCH DATASETS (ScholarGraph) ==========
+  # ========== PUBLICATION DATASETS (1 source) ==========
   dblp_acm:
     name: "DBLP-ACM Author Disambiguation"
-    domain: "research"
+    entity_type: "PUBLICATION"
     source_url: "https://dbs.uni-leipzig.de/research/projects/object_matching/"
-    base_records: 12000  # DBLP + ACM combined
-    target_records: 12000  # No expansion needed
+    base_records: 5000
+    target_records: 50000
     schema:
       - title
       - authors
       - venue
       - year
     corruption:
-      rate: 0.05  # Already has natural duplicates
-      author_variants: true  # "J. Smith" vs "John Smith"
+      rate: 0.05
+      author_variants: true
       venue_abbreviations: true
     pairs:
-      total: 100000
-      positive: 50000
-      negative: 50000
+      total: 10000
+      positive: 5000
+      negative: 5000
     bigquery_tables:
       papers: "scholargraph.papers"
       authors: "scholargraph.authors"
       pairs: "scholargraph.er_pairs"
     graph:
       type: "coauthorship"
-      edges: 50000  # Estimated
+      edges: 25000
+
+# =============================================================================
+# PRODUCTION OUTPUT:
+#   - ~300K total accounts (50K × 6 datasets)
+#   - ~60K total pairs (10K × 6 datasets)
+#   - 3 entity types: PERSON, PRODUCT, PUBLICATION
+#   - Pipeline execution: ~30-60 minutes
+# =============================================================================

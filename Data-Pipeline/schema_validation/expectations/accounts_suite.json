@@ -1,0 +1,121 @@
+{
+  "expectation_suite_name": "accounts_suite",
+  "ge_cloud_id": null,
+  "data_asset_type": "Dataset",
+  "meta": {
+    "version": "1.0.0",
+    "description": "Validation suite for entity resolution accounts data"
+  },
+  "expectations": [
+    {
+      "expectation_type": "expect_table_columns_to_match_set",
+      "kwargs": {
+        "column_set": ["id", "name", "address"],
+        "exact_match": false
+      },
+      "meta": {
+        "description": "Required columns must exist"
+      }
+    },
+    {
+      "expectation_type": "expect_column_to_exist",
+      "kwargs": {
+        "column": "id"
+      },
+      "meta": {
+        "description": "ID column must exist"
+      }
+    },
+    {
+      "expectation_type": "expect_column_to_exist",
+      "kwargs": {
+        "column": "name"
+      },
+      "meta": {
+        "description": "Name column must exist"
+      }
+    },
+    {
+      "expectation_type": "expect_column_to_exist",
+      "kwargs": {
+        "column": "address"
+      },
+      "meta": {
+        "description": "Address column must exist"
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": {
+        "column": "id",
+        "mostly": 1.0
+      },
+      "meta": {
+        "description": "ID column must not have null values"
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": {
+        "column": "name",
+        "mostly": 0.95
+      },
+      "meta": {
+        "description": "Name column should have at most 5% null values"
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": {
+        "column": "address",
+        "mostly": 0.90
+      },
+      "meta": {
+        "description": "Address column should have at most 10% null values"
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_unique",
+      "kwargs": {
+        "column": "id"
+      },
+      "meta": {
+        "description": "ID values must be unique"
+      }
+    },
+    {
+      "expectation_type": "expect_column_value_lengths_to_be_between",
+      "kwargs": {
+        "column": "name",
+        "min_value": 1,
+        "max_value": 500,
+        "mostly": 0.99
+      },
+      "meta": {
+        "description": "Name length should be between 1 and 500 characters"
+      }
+    },
+    {
+      "expectation_type": "expect_column_value_lengths_to_be_between",
+      "kwargs": {
+        "column": "address",
+        "min_value": 1,
+        "max_value": 1000,
+        "mostly": 0.95
+      },
+      "meta": {
+        "description": "Address length should be between 1 and 1000 characters"
+      }
+    },
+    {
+      "expectation_type": "expect_table_row_count_to_be_between",
+      "kwargs": {
+        "min_value": 1,
+        "max_value": 10000000
+      },
+      "meta": {
+        "description": "Table should have between 1 and 10M rows"
+      }
+    }
+  ]
+}

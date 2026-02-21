@@ -1,0 +1,5 @@
+outs:
+- md5: 2a1c9b140a53811ccedecadd65a6cad0
+  size: 45345
+  hash: md5
+  path: pseudopeople.csv

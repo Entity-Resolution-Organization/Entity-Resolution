@@ -1,0 +1,156 @@
+name: Data Pipeline CI
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+    paths:
+      - 'Data-Pipeline/**'
+      - '.github/workflows/test.yml'
+  pull_request:
+    branches:
+      - main
+      - dev
+    paths:
+      - 'Data-Pipeline/**'
+      - '.github/workflows/test.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: Data-Pipeline
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: 'Data-Pipeline/requirements.txt'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests with coverage
+        run: |
+          pytest tests/ \
+            --cov=scripts \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --cov-config=setup.cfg \
+            -v
+
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: Data-Pipeline/coverage.xml
+          flags: data-pipeline
+          name: data-pipeline-coverage
+          fail_ci_if_error: false
+
+  lint:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: Data-Pipeline
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install linting tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 black isort
+
+      - name: Check code formatting with Black
+        run: |
+          black --check --diff scripts/ tests/ || echo "::warning::Code formatting issues found. Run 'black scripts/ tests/' to fix."
+
+      - name: Check import sorting with isort
+        run: |
+          isort --check-only --diff scripts/ tests/ || echo "::warning::Import sorting issues found. Run 'isort scripts/ tests/' to fix."
+
+      - name: Lint with flake8
+        run: |
+          # Stop build if there are Python syntax errors or undefined names
+          flake8 scripts/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
+          # Warnings for other issues (don't fail build)
+          flake8 scripts/ tests/ --count --exit-zero --max-complexity=15 --max-line-length=120 --statistics
+
+  validate-config:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: Data-Pipeline
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install pyyaml
+
+      - name: Validate datasets.yaml
+        run: |
+          python -c "
+          import yaml
+          import sys
+
+          with open('config/datasets.yaml') as f:
+              config = yaml.safe_load(f)
+
+          # Validate required fields
+          assert 'active_datasets' in config, 'Missing active_datasets'
+          assert 'datasets' in config, 'Missing datasets'
+
+          required_fields = ['name', 'entity_type', 'base_records', 'target_records']
+
+          for dataset_name in config['active_datasets']:
+              assert dataset_name in config['datasets'], f'Dataset {dataset_name} not defined'
+              dataset = config['datasets'][dataset_name]
+              for field in required_fields:
+                  assert field in dataset, f'Dataset {dataset_name} missing {field}'
+
+          print('✓ datasets.yaml is valid')
+          print(f'  Active datasets: {len(config[\"active_datasets\"])}')
+          print(f'  Entity types: {set(d[\"entity_type\"] for d in config[\"datasets\"].values())}')
+          "
+
+      - name: Validate DVC configuration
+        run: |
+          if [ -f "dvc.yaml" ]; then
+            python -c "
+          import yaml
+          with open('dvc.yaml') as f:
+              dvc = yaml.safe_load(f)
+          assert 'stages' in dvc, 'Missing stages in dvc.yaml'
+          print('✓ dvc.yaml is valid')
+          print(f'  Stages: {list(dvc[\"stages\"].keys())}')
+          "
+          else
+            echo "⚠ dvc.yaml not found (optional)"
+          fi
