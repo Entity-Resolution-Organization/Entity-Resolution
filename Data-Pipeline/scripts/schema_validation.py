@@ -22,9 +22,12 @@ import pandas as pd
 try:
     import great_expectations as gx
     from great_expectations.core.batch import RuntimeBatchRequest
-    from great_expectations.core.expectation_configuration import ExpectationConfiguration
+    from great_expectations.core.expectation_configuration import (
+        ExpectationConfiguration,
+    )
     from great_expectations.core.expectation_suite import ExpectationSuite
     from great_expectations.data_context import FileDataContext
+
     GE_AVAILABLE = True
 except ImportError:
     GE_AVAILABLE = False
@@ -67,12 +70,9 @@ class SchemaValidator:
             "suite_name": "accounts_suite",
             "timestamp": datetime.now().isoformat(),
             "success": True,
-            "statistics": {
-                "total_rows": len(df),
-                "total_columns": len(df.columns)
-            },
+            "statistics": {"total_rows": len(df), "total_columns": len(df.columns)},
             "expectations": [],
-            "failed_expectations": []
+            "failed_expectations": [],
         }
 
         # Required columns check
@@ -82,7 +82,7 @@ class SchemaValidator:
             "expectation": "expect_columns_to_exist",
             "columns": required_cols,
             "success": len(missing_cols) == 0,
-            "details": {"missing_columns": missing_cols}
+            "details": {"missing_columns": missing_cols},
         }
         results["expectations"].append(exp_result)
         if not exp_result["success"]:
@@ -99,7 +99,10 @@ class SchemaValidator:
             "expectation": "expect_column_values_to_not_be_null",
             "column": "id",
             "success": id_nulls == 0,
-            "details": {"null_count": int(id_nulls), "null_pct": round(id_nulls / len(df) * 100, 2)}
+            "details": {
+                "null_count": int(id_nulls),
+                "null_pct": round(id_nulls / len(df) * 100, 2),
+            },
         }
         results["expectations"].append(exp_result)
         if not exp_result["success"]:
@@ -114,7 +117,10 @@ class SchemaValidator:
             "column": "name",
             "mostly": 0.95,
             "success": name_null_pct <= 0.05,
-            "details": {"null_count": int(name_nulls), "null_pct": round(name_null_pct * 100, 2)}
+            "details": {
+                "null_count": int(name_nulls),
+                "null_pct": round(name_null_pct * 100, 2),
+            },
         }
         results["expectations"].append(exp_result)
         if not exp_result["success"]:
@@ -129,7 +135,10 @@ class SchemaValidator:
             "column": "address",
             "mostly": 0.90,
             "success": addr_null_pct <= 0.10,
-            "details": {"null_count": int(addr_nulls), "null_pct": round(addr_null_pct * 100, 2)}
+            "details": {
+                "null_count": int(addr_nulls),
+                "null_pct": round(addr_null_pct * 100, 2),
+            },
         }
         results["expectations"].append(exp_result)
         if not exp_result["success"]:
@@ -142,7 +151,11 @@ class SchemaValidator:
             "expectation": "expect_column_values_to_be_unique",
             "column": "id",
             "success": id_unique == len(df),
-            "details": {"unique_count": int(id_unique), "total_count": len(df), "duplicate_count": len(df) - int(id_unique)}
+            "details": {
+                "unique_count": int(id_unique),
+                "total_count": len(df),
+                "duplicate_count": len(df) - int(id_unique),
+            },
         }
         results["expectations"].append(exp_result)
         if not exp_result["success"]:
@@ -159,7 +172,11 @@ class SchemaValidator:
             "min_value": 1,
             "max_value": 500,
             "success": valid_pct >= 0.99,
-            "details": {"valid_count": int(valid_lengths), "total_count": len(name_lengths), "valid_pct": round(valid_pct * 100, 2)}
+            "details": {
+                "valid_count": int(valid_lengths),
+                "total_count": len(name_lengths),
+                "valid_pct": round(valid_pct * 100, 2),
+            },
         }
         results["expectations"].append(exp_result)
         if not exp_result["success"]:
@@ -172,20 +189,77 @@ class SchemaValidator:
             "min_value": 1,
             "max_value": 10000000,
             "success": 1 <= len(df) <= 10000000,
-            "details": {"row_count": len(df)}
+            "details": {"row_count": len(df)},
         }
         results["expectations"].append(exp_result)
         if not exp_result["success"]:
             results["failed_expectations"].append(exp_result)
             results["success"] = False
 
+        # Multi-domain validation: entity_type column (optional but validated if present)
+        if "entity_type" in df.columns:
+            valid_entity_types = {"PERSON", "PRODUCT", "PUBLICATION", "UNKNOWN"}
+            entity_values = set(df["entity_type"].dropna().unique())
+            invalid_types = entity_values - valid_entity_types
+            exp_result = {
+                "expectation": "expect_column_values_to_be_in_set",
+                "column": "entity_type",
+                "value_set": list(valid_entity_types),
+                "success": len(invalid_types) == 0,
+                "details": {
+                    "valid_types": list(entity_values & valid_entity_types),
+                    "invalid_types": list(invalid_types),
+                    "distribution": df["entity_type"].value_counts().to_dict(),
+                },
+            }
+            results["expectations"].append(exp_result)
+            if not exp_result["success"]:
+                results["failed_expectations"].append(exp_result)
+                results["success"] = False
+
+        # Multi-domain validation: source_dataset column (optional but validated if present)
+        if "source_dataset" in df.columns:
+            source_nulls = df["source_dataset"].isnull().sum()
+            exp_result = {
+                "expectation": "expect_column_values_to_not_be_null",
+                "column": "source_dataset",
+                "success": source_nulls == 0,
+                "details": {
+                    "null_count": int(source_nulls),
+                    "sources_present": df["source_dataset"].nunique(),
+                    "source_distribution": df["source_dataset"]
+                    .value_counts()
+                    .to_dict(),
+                },
+            }
+            results["expectations"].append(exp_result)
+            if not exp_result["success"]:
+                results["failed_expectations"].append(exp_result)
+                results["success"] = False
+
         # Statistics
         results["statistics"]["expectations_count"] = len(results["expectations"])
-        results["statistics"]["successful_expectations"] = len(results["expectations"]) - len(results["failed_expectations"])
-        results["statistics"]["failed_expectations"] = len(results["failed_expectations"])
-        results["statistics"]["success_rate"] = round(
-            results["statistics"]["successful_expectations"] / results["statistics"]["expectations_count"] * 100, 2
+        results["statistics"]["successful_expectations"] = len(
+            results["expectations"]
+        ) - len(results["failed_expectations"])
+        results["statistics"]["failed_expectations"] = len(
+            results["failed_expectations"]
         )
+        results["statistics"]["success_rate"] = round(
+            results["statistics"]["successful_expectations"]
+            / results["statistics"]["expectations_count"]
+            * 100,
+            2,
+        )
+
+        # Add multi-domain stats if present
+        if "entity_type" in df.columns:
+            results["statistics"]["entity_types"] = df["entity_type"].nunique()
+            results["statistics"]["entity_distribution"] = (
+                df["entity_type"].value_counts().to_dict()
+            )
+        if "source_dataset" in df.columns:
+            results["statistics"]["source_datasets"] = df["source_dataset"].nunique()
 
         return results
 
@@ -203,12 +277,9 @@ class SchemaValidator:
             "suite_name": "pairs_suite",
             "timestamp": datetime.now().isoformat(),
             "success": True,
-            "statistics": {
-                "total_rows": len(df),
-                "total_columns": len(df.columns)
-            },
+            "statistics": {"total_rows": len(df), "total_columns": len(df.columns)},
             "expectations": [],
-            "failed_expectations": []
+            "failed_expectations": [],
         }
 
         # Required columns check
@@ -218,7 +289,7 @@ class SchemaValidator:
             "expectation": "expect_columns_to_exist",
             "columns": required_cols,
             "success": len(missing_cols) == 0,
-            "details": {"missing_columns": missing_cols}
+            "details": {"missing_columns": missing_cols},
         }
         results["expectations"].append(exp_result)
         if not exp_result["success"]:
@@ -235,7 +306,7 @@ class SchemaValidator:
             "expectation": "expect_column_values_to_not_be_null",
             "column": "id1",
             "success": id1_nulls == 0,
-            "details": {"null_count": int(id1_nulls)}
+            "details": {"null_count": int(id1_nulls)},
         }
         results["expectations"].append(exp_result)
         if not exp_result["success"]:
@@ -248,7 +319,7 @@ class SchemaValidator:
             "expectation": "expect_column_values_to_not_be_null",
             "column": "id2",
             "success": id2_nulls == 0,
-            "details": {"null_count": int(id2_nulls)}
+            "details": {"null_count": int(id2_nulls)},
         }
         results["expectations"].append(exp_result)
         if not exp_result["success"]:
@@ -261,7 +332,7 @@ class SchemaValidator:
             "expectation": "expect_column_values_to_not_be_null",
             "column": "label",
             "success": label_nulls == 0,
-            "details": {"null_count": int(label_nulls)}
+            "details": {"null_count": int(label_nulls)},
         }
         results["expectations"].append(exp_result)
         if not exp_result["success"]:
@@ -278,8 +349,8 @@ class SchemaValidator:
             "details": {
                 "valid_count": int(valid_labels),
                 "invalid_count": len(df) - int(valid_labels),
-                "label_distribution": df["label"].value_counts().to_dict()
-            }
+                "label_distribution": df["label"].value_counts().to_dict(),
+            },
         }
         results["expectations"].append(exp_result)
         if not exp_result["success"]:
@@ -292,7 +363,11 @@ class SchemaValidator:
             "expectation": "expect_compound_columns_to_be_unique",
             "columns": ["id1", "id2"],
             "success": unique_pairs == len(df),
-            "details": {"unique_pairs": int(unique_pairs), "total_pairs": len(df), "duplicate_pairs": len(df) - int(unique_pairs)}
+            "details": {
+                "unique_pairs": int(unique_pairs),
+                "total_pairs": len(df),
+                "duplicate_pairs": len(df) - int(unique_pairs),
+            },
         }
         results["expectations"].append(exp_result)
         if not exp_result["success"]:
@@ -305,22 +380,79 @@ class SchemaValidator:
             "min_value": 1,
             "max_value": 10000000,
             "success": 1 <= len(df) <= 10000000,
-            "details": {"row_count": len(df)}
+            "details": {"row_count": len(df)},
         }
         results["expectations"].append(exp_result)
         if not exp_result["success"]:
             results["failed_expectations"].append(exp_result)
             results["success"] = False
 
+        # Multi-domain validation: entity_type column (optional but validated if present)
+        if "entity_type" in df.columns:
+            valid_entity_types = {"PERSON", "PRODUCT", "PUBLICATION", "UNKNOWN"}
+            entity_values = set(df["entity_type"].dropna().unique())
+            invalid_types = entity_values - valid_entity_types
+            exp_result = {
+                "expectation": "expect_column_values_to_be_in_set",
+                "column": "entity_type",
+                "value_set": list(valid_entity_types),
+                "success": len(invalid_types) == 0,
+                "details": {
+                    "valid_types": list(entity_values & valid_entity_types),
+                    "invalid_types": list(invalid_types),
+                    "distribution": df["entity_type"].value_counts().to_dict(),
+                },
+            }
+            results["expectations"].append(exp_result)
+            if not exp_result["success"]:
+                results["failed_expectations"].append(exp_result)
+                results["success"] = False
+
+        # Multi-domain validation: source_dataset column (optional but validated if present)
+        if "source_dataset" in df.columns:
+            source_nulls = df["source_dataset"].isnull().sum()
+            exp_result = {
+                "expectation": "expect_column_values_to_not_be_null",
+                "column": "source_dataset",
+                "success": source_nulls == 0,
+                "details": {
+                    "null_count": int(source_nulls),
+                    "sources_present": df["source_dataset"].nunique(),
+                    "source_distribution": df["source_dataset"]
+                    .value_counts()
+                    .to_dict(),
+                },
+            }
+            results["expectations"].append(exp_result)
+            if not exp_result["success"]:
+                results["failed_expectations"].append(exp_result)
+                results["success"] = False
+
         # Statistics
         results["statistics"]["expectations_count"] = len(results["expectations"])
-        results["statistics"]["successful_expectations"] = len(results["expectations"]) - len(results["failed_expectations"])
-        results["statistics"]["failed_expectations"] = len(results["failed_expectations"])
+        results["statistics"]["successful_expectations"] = len(
+            results["expectations"]
+        ) - len(results["failed_expectations"])
+        results["statistics"]["failed_expectations"] = len(
+            results["failed_expectations"]
+        )
         results["statistics"]["success_rate"] = round(
-            results["statistics"]["successful_expectations"] / results["statistics"]["expectations_count"] * 100, 2
+            results["statistics"]["successful_expectations"]
+            / results["statistics"]["expectations_count"]
+            * 100,
+            2,
         )
         results["statistics"]["positive_pairs"] = int((df["label"] == 1).sum())
         results["statistics"]["negative_pairs"] = int((df["label"] == 0).sum())
+
+        # Add multi-domain stats if present
+        if "entity_type" in df.columns:
+            results["statistics"]["entity_types"] = df["entity_type"].nunique()
+            results["statistics"]["entity_distribution"] = (
+                df["entity_type"].value_counts().to_dict()
+            )
+        if "source_dataset" in df.columns:
+            results["statistics"]["source_datasets"] = df["source_dataset"].nunique()
 
         return results
 
@@ -338,10 +470,14 @@ class SchemaValidator:
         print("[Schema Validation] Starting validation...")
 
         accounts_results = self.validate_accounts(accounts_df)
-        print(f"[Schema Validation] Accounts: {accounts_results['statistics']['success_rate']}% success rate")
+        print(
+            f"[Schema Validation] Accounts: {accounts_results['statistics']['success_rate']}% success rate"
+        )
 
         pairs_results = self.validate_pairs(pairs_df)
-        print(f"[Schema Validation] Pairs: {pairs_results['statistics']['success_rate']}% success rate")
+        print(
+            f"[Schema Validation] Pairs: {pairs_results['statistics']['success_rate']}% success rate"
+        )
 
         combined_results = {
             "timestamp": datetime.now().isoformat(),
@@ -350,28 +486,32 @@ class SchemaValidator:
             "pairs_validation": pairs_results,
             "summary": {
                 "total_expectations": (
-                    accounts_results["statistics"]["expectations_count"] +
-                    pairs_results["statistics"]["expectations_count"]
+                    accounts_results["statistics"]["expectations_count"]
+                    + pairs_results["statistics"]["expectations_count"]
                 ),
                 "successful_expectations": (
-                    accounts_results["statistics"]["successful_expectations"] +
-                    pairs_results["statistics"]["successful_expectations"]
+                    accounts_results["statistics"]["successful_expectations"]
+                    + pairs_results["statistics"]["successful_expectations"]
                 ),
                 "failed_expectations": (
-                    accounts_results["statistics"]["failed_expectations"] +
-                    pairs_results["statistics"]["failed_expectations"]
-                )
-            }
+                    accounts_results["statistics"]["failed_expectations"]
+                    + pairs_results["statistics"]["failed_expectations"]
+                ),
+            },
         }
 
         combined_results["summary"]["overall_success_rate"] = round(
-            combined_results["summary"]["successful_expectations"] /
-            combined_results["summary"]["total_expectations"] * 100, 2
+            combined_results["summary"]["successful_expectations"]
+            / combined_results["summary"]["total_expectations"]
+            * 100,
+            2,
         )
 
         return combined_results
 
-    def save_results(self, results: Dict, filename: str = "schema_validation_results.json") -> str:
+    def save_results(
+        self, results: Dict, filename: str = "schema_validation_results.json"
+    ) -> str:
         """
         Save validation results to JSON file.
 
@@ -389,7 +529,9 @@ class SchemaValidator:
         return str(output_path)
 
 
-def validate_data(accounts_path: str, pairs_path: str, output_dir: str = "data/metrics") -> Dict:
+def validate_data(
+    accounts_path: str, pairs_path: str, output_dir: str = "data/metrics"
+) -> Dict:
     """
     Validate accounts and pairs data files.
 
@@ -420,10 +562,14 @@ def validate_data(accounts_path: str, pairs_path: str, output_dir: str = "data/m
 
 def main():
     """Main entry point for CLI usage."""
-    parser = argparse.ArgumentParser(description="Validate entity resolution data schema")
+    parser = argparse.ArgumentParser(
+        description="Validate entity resolution data schema"
+    )
     parser.add_argument("--accounts", required=True, help="Path to accounts CSV file")
     parser.add_argument("--pairs", required=True, help="Path to pairs CSV file")
-    parser.add_argument("--output", default="data/metrics", help="Output directory for results")
+    parser.add_argument(
+        "--output", default="data/metrics", help="Output directory for results"
+    )
 
     args = parser.parse_args()
 
@@ -431,10 +577,14 @@ def main():
 
     # Exit with error code if validation failed
     if not results["overall_success"]:
-        print(f"[Schema Validation] FAILED - {results['summary']['failed_expectations']} expectations failed")
+        print(
+            f"[Schema Validation] FAILED - {results['summary']['failed_expectations']} expectations failed"
+        )
         sys.exit(1)
     else:
-        print(f"[Schema Validation] PASSED - All {results['summary']['total_expectations']} expectations passed")
+        print(
+            f"[Schema Validation] PASSED - All {results['summary']['total_expectations']} expectations passed"
+        )
         sys.exit(0)
 
 
