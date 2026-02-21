@@ -21,7 +21,6 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple
 
 import pandas as pd
 import yaml
@@ -33,13 +32,15 @@ from airflow.utils.task_group import TaskGroup
 # Add scripts to path
 sys.path.insert(0, "/opt/airflow/scripts")
 
-from bias_detection import BiasDetector
-from data_validation import (DatasetValidator, QualityGate,
-                             TrainingSplitValidator)
-from dataset_factory import get_dataset_handler
-from preprocessing import preprocess_dataset
-
-from schema_validation import SchemaValidator
+from bias_detection import BiasDetector  # noqa: E402
+from data_validation import (
+    DatasetValidator,
+    QualityGate,
+    TrainingSplitValidator,
+)  # noqa: E402
+from dataset_factory import get_dataset_handler  # noqa: E402
+from preprocessing import preprocess_dataset  # noqa: E402
+from schema_validation import SchemaValidator  # noqa: E402
 
 # =============================================================================
 # CONFIGURATION
@@ -357,7 +358,7 @@ def merge_datasets(**context):
     merged_accounts.to_csv(merged_accounts_path, index=False)
     merged_pairs.to_csv(merged_pairs_path, index=False)
 
-    print(f"\n[Merge] MERGED OUTPUT:")
+    print("\n[Merge] MERGED OUTPUT:")
     print(f"  - Accounts: {len(merged_accounts)} records -> {merged_accounts_path}")
     print(f"  - Pairs: {len(merged_pairs)} records -> {merged_pairs_path}")
 
@@ -538,8 +539,9 @@ def create_training_splits(**context):
         if "label" in train_df.columns:
             train_pos = (train_df["label"] == 1).sum()
             train_neg = (train_df["label"] == 0).sum()
+            pos_pct = train_pos / (train_pos + train_neg) * 100
             print(
-                f"  - Train label balance: {train_pos} pos / {train_neg} neg ({train_pos/(train_pos+train_neg)*100:.1f}% pos)"
+                f"  - Train label balance: {train_pos} pos / {train_neg} neg ({pos_pct:.1f}% pos)"
             )
 
         split_summary[entity_type] = {
@@ -680,7 +682,7 @@ def bias_detection(**context):
     # Log distributions
     if "entity_type" in accounts_df.columns:
         entity_dist = accounts_df["entity_type"].value_counts()
-        print(f"[Bias Detection] Entity type distribution:")
+        print("[Bias Detection] Entity type distribution:")
         for et, count in entity_dist.items():
             print(f"  - {et}: {count} ({count/len(accounts_df)*100:.1f}%)")
 
@@ -893,7 +895,8 @@ def load_accounts_to_bigquery(**context):
 
     ti = context["task_instance"]
     base_dir = get_base_dir()
-    timestamp = ti.xcom_pull(task_ids="cloud_tasks.upload_to_gcs", key="gcs_timestamp")
+    # Timestamp from GCS upload (reserved for future use)
+    ti.xcom_pull(task_ids="cloud_tasks.upload_to_gcs", key="gcs_timestamp")
 
     try:
         client = bigquery.Client()
@@ -1023,8 +1026,10 @@ def verify_bigquery_load(**context):
     pairs_diff = abs(actual_pairs - expected_pairs) / expected_pairs
 
     if accounts_diff > 0.05:
+        diff_pct = accounts_diff * 100
         raise ValueError(
-            f"Accounts count mismatch: expected {expected_accounts}, got {actual_accounts} ({accounts_diff*100:.1f}% difference)"
+            f"Accounts count mismatch: expected {expected_accounts}, "
+            f"got {actual_accounts} ({diff_pct:.1f}% difference)"
         )
 
     if pairs_diff > 0.05:

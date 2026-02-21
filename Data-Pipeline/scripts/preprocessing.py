@@ -1,9 +1,8 @@
 import logging
 import random
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, Tuple
 
-import numpy as np
 import pandas as pd
 
 logging.basicConfig(level=logging.INFO)

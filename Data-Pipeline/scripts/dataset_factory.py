@@ -3,7 +3,7 @@ import logging
 import os
 import time
 from abc import ABC, abstractmethod
-from typing import Dict, Optional
+from typing import Dict
 
 import pandas as pd
 import requests
@@ -432,8 +432,6 @@ class OFACHandler(DatasetHandler):
 
     def expand(self, df: pd.DataFrame) -> pd.DataFrame:
         """Synthetically expand dataset with variations to reach target size."""
-        import random
-
         target = self.config["target_records"]
         current_size = len(df)
 

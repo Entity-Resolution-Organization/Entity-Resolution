@@ -19,8 +19,8 @@ import yaml
 # Add scripts to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from dataset_factory import get_dataset_handler
-from preprocessing import preprocess_dataset
+from dataset_factory import get_dataset_handler  # noqa: E402
+from preprocessing import preprocess_dataset  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"

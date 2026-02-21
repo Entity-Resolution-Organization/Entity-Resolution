@@ -10,23 +10,16 @@ Usage:
 
 import argparse
 import json
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional
 
 import pandas as pd
 
 # Try to import great_expectations library for advanced validation
 try:
-    import great_expectations as gx
-    from great_expectations.core.batch import RuntimeBatchRequest
-    from great_expectations.core.expectation_configuration import (
-        ExpectationConfiguration,
-    )
-    from great_expectations.core.expectation_suite import ExpectationSuite
-    from great_expectations.data_context import FileDataContext
+    from great_expectations.data_context import FileDataContext  # noqa: F401
 
     GE_AVAILABLE = True
 except ImportError:

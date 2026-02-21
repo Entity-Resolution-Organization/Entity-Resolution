@@ -11,7 +11,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Optional, Set, Tuple
 
 import pandas as pd
 
@@ -748,10 +748,10 @@ class QualityGate:
             # Determine if bias is acceptable
             if bias_risk == "CRITICAL":
                 decision["passed"] = False
-                decision["failures"].append(f"Critical bias risk detected")
+                decision["failures"].append("Critical bias risk detected")
             elif bias_risk == "HIGH" and fail_on_high_bias:
                 decision["passed"] = False
-                decision["failures"].append(f"High bias risk detected (strict mode)")
+                decision["failures"].append("High bias risk detected (strict mode)")
             elif bias_risk == "HIGH":
                 decision["warnings"].append(
                     f"High bias risk: {high_risk_count} high-risk issues detected"
