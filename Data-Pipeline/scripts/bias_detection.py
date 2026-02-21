@@ -73,8 +73,8 @@ class BiasDetector:
             "most_common": str(distribution.idxmax()),
             "least_common": str(distribution.idxmin()),
             "imbalance_ratio": round(imbalance, 4),
-            "is_balanced": imbalance < 0.3,
-            "has_entity_type_bias": imbalance >= 0.3,
+            "is_balanced": bool(imbalance < 0.3),
+            "has_entity_type_bias": bool(imbalance >= 0.3),
             "severity": (
                 "HIGH" if imbalance > 0.5 else "MEDIUM" if imbalance > 0.3 else "LOW"
             ),
@@ -132,8 +132,8 @@ class BiasDetector:
             "distribution": distribution.to_dict(),
             "inference_method": "name_pattern_matching",
             "most_common": str(distribution.idxmax()),
-            "is_balanced": imbalance < 0.3,
-            "has_entity_type_bias": imbalance >= 0.3,
+            "is_balanced": bool(imbalance < 0.3),
+            "has_entity_type_bias": bool(imbalance >= 0.3),
             "severity": "LOW",
             "recommendation": "Add explicit entity_type column for accurate tracking",
         }
@@ -194,7 +194,7 @@ class BiasDetector:
             "charset_distribution": charset_counts.to_dict(),
             "non_ascii_names": int(non_ascii),
             "non_ascii_percentage": round(float(non_ascii_pct), 2),
-            "has_language_bias": non_ascii_pct < 5.0,
+            "has_language_bias": bool(non_ascii_pct < 5.0),
             "severity": (
                 "HIGH"
                 if non_ascii_pct < 2
@@ -320,7 +320,7 @@ class BiasDetector:
             "region_distribution": region_counts.to_dict(),
             "us_addresses": int(us_count),
             "us_percentage": round(float(us_pct), 2),
-            "has_geographic_bias": us_pct > 80.0,
+            "has_geographic_bias": bool(us_pct > 80.0),
             "severity": "HIGH" if us_pct > 95 else "MEDIUM" if us_pct > 80 else "LOW",
             "recommendation": (
                 "Add international datasets (GLEIF global companies, OpenAddresses international)"
@@ -360,7 +360,7 @@ class BiasDetector:
             "positive_percentage": round(float(positive_pct), 2),
             "negative_percentage": round(float(negative_pct), 2),
             "imbalance_from_balanced": round(float(imbalance), 2),
-            "is_balanced": imbalance < 15,
+            "is_balanced": bool(imbalance < 15),
             "has_label_bias": imbalance >= 15,
             "severity": (
                 "HIGH" if imbalance > 30 else "MEDIUM" if imbalance > 15 else "LOW"

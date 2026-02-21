@@ -1,3 +1,4 @@
+# Using Airflow 2.8.1 (stable LTS) - Airflow 3.x has breaking API changes
 FROM apache/airflow:2.8.1-python3.10
 
 USER root

@@ -5,7 +5,7 @@ This directory contains GCP service account credentials for cloud operations.
 ## Setup Instructions
 
 1. **Go to GCP Console:**
-   https://console.cloud.google.com/iam-admin/serviceaccounts?project=entity-resolution-487121
+   https://console.cloud.google.com/iam-admin/serviceaccounts?project=YOUR_PROJECT_ID
 
 2. **Create Service Account:**
    - Name: `airflow-pipeline-sa`
@@ -56,9 +56,9 @@ The following environment variables are used:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `GCP_PROJECT_ID` | GCP Project ID | `entity-resolution-487121` |
-| `GCS_BUCKET` | GCS bucket name | `entity-resolution-bucket-1` |
-| `BQ_DATASET` | BigQuery dataset | `entity_resolution_bq` |
+| `GCP_PROJECT_ID` | GCP Project ID | (set in .env) |
+| `GCS_BUCKET` | GCS bucket name | (set in .env) |
+| `BQ_DATASET` | BigQuery dataset | (set in .env) |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to service account key | `/opt/airflow/secrets/gcp-sa-key.json` |
 | `EXECUTION_MODE` | `local` or `cloud` | `local` |
 
