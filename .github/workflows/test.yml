@@ -2,14 +2,19 @@ name: Data Pipeline CI
 
 on:
   push:
-    branches: [main, 'feature/**', 'Feature/**']
+    branches:
+      - main
+      - dev
     paths:
       - 'Data-Pipeline/**'
       - '.github/workflows/test.yml'
   pull_request:
-    branches: [main]
+    branches:
+      - main
+      - dev
     paths:
       - 'Data-Pipeline/**'
+      - '.github/workflows/test.yml'
 
 jobs:
   test:
