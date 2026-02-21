@@ -15,16 +15,6 @@ This project presents a production-grade entity resolution system that:
 - **Detects data drift** and triggers automated retraining when quality degrades
 - **Scales to millions of records** using BigQuery and Vertex AI infrastructure
 
-### Use Cases
-
-| Domain | Application |
-|--------|-------------|
-| **Financial Crime** | Fraud ring detection through resolved entity graphs |
-| **Customer 360** | Unified customer view across touchpoints |
-| **KYC/AML** | Know Your Customer compliance and sanctions screening |
-| **Supplier Consolidation** | Vendor deduplication for procurement |
-| **Catalog Matching** | Product matching across retailers |
-| **Author Disambiguation** | Research publication linking |
 
 ---
 
@@ -33,23 +23,35 @@ This project presents a production-grade entity resolution system that:
 ```
 Entity-Resolution/
 ├── Data-Pipeline/              # Data processing pipeline
-│   ├── dags/                   # Airflow DAG definitions
-│   ├── scripts/                # Processing scripts
+│   ├── dags/                   # Airflow DAG definitions (32 tasks)
+│   ├── scripts/                # Processing modules
+│   │   ├── dataset_factory.py  # Multi-domain dataset handlers
+│   │   ├── preprocessing.py    # Data transformation
+│   │   ├── data_validation.py  # Validation gates
+│   │   ├── schema_validation.py # Schema checks
+│   │   ├── bias_detection.py   # Bias analysis
+│   │   └── alerting.py         # Alert system
 │   ├── config/                 # Dataset configurations
-│   ├── tests/                  # Unit tests
-│   ├── schema_validation/      # Validation expectations
+│   ├── tests/                  # Unit tests (107 tests)
+│   ├── schema_validation/      # Great Expectations config
 │   ├── data/                   # Data directory (DVC tracked)
+│   │   ├── raw/                # Source datasets
+│   │   ├── processed/          # Transformed data
+│   │   ├── training/           # ML training splits
+│   │   └── metrics/            # Validation reports
+│   ├── secrets/                # GCP credentials (gitignored)
+│   ├── logs/                   # Airflow logs
 │   ├── docker-compose.yml      # Airflow stack
-│   ├── dvc.yaml               # DVC pipeline definition
-│   └── README.md              # Detailed pipeline documentation
+│   ├── dvc.yaml                # DVC pipeline definition
+│   └── README.md               # Detailed pipeline documentation
 │
-├── Model-Training/            # ML model training (future)
+├── Model-Training/             # ML model training (future)
 │   └── ...
 │
-├── Inference-Service/         # Production inference (future)
+├── Inference-Service/          # Production inference (future)
 │   └── ...
 │
-└── README.md                  # This file
+└── README.md                   # This file
 ```
 
 ---
@@ -77,20 +79,25 @@ docker exec data-pipeline-airflow-scheduler-1 airflow dags trigger er_data_pipel
 | Feature | Description |
 |---------|-------------|
 | **Multi-Domain Processing** | Person, Product, Publication entities |
-| **6 Dataset Handlers** | Pseudopeople, NC Voters, OFAC, WDC, Amazon, DBLP-ACM |
+| **6 Dataset Handlers** | Pseudopeople, NC Voters, OFAC SDN, WDC Products, Amazon, DBLP-ACM |
+| **Per-Dataset Validation** | Quality gates after each dataset load |
 | **Schema Validation** | Data quality expectations with detailed reporting |
-| **Bias Detection** | Entity type, language, geographic bias analysis |
+| **Training Split Validation** | 70/15/15 splits with leakage detection |
+| **Quality Gate** | Go/no-go decision based on all validations |
+| **Bias Detection** | Entity type, language, geographic, data source bias |
 | **DVC Integration** | Data versioning and reproducibility |
-| **Cloud-Ready** | GCS and BigQuery integration |
+| **Cloud-Ready** | Conditional GCS upload and BigQuery loading |
 
 ### Output
 
 | Metric | Value |
 |--------|-------|
-| Total Accounts | ~25,000 |
-| Total Pairs | ~5,000 |
+| Total Accounts | ~287,000 |
+| Training Pairs | 55,000 |
 | Entity Types | 3 (PERSON, PRODUCT, PUBLICATION) |
-| Source Datasets | 5-6 |
+| Source Datasets | 6 |
+| DAG Tasks | 32 |
+| Unit Tests | 107 |
 
 **[See Full Documentation: Data-Pipeline/README.md](Data-Pipeline/README.md)**
 
@@ -113,43 +120,67 @@ docker exec data-pipeline-airflow-scheduler-1 airflow dags trigger er_data_pipel
 ## Pipeline Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    ENTITY RESOLUTION SYSTEM                      │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐        │
-│   │   Person    │    │   Product   │    │ Publication │        │
-│   │  Datasets   │    │  Datasets   │    │  Datasets   │        │
-│   │  (3 srcs)   │    │  (2 srcs)   │    │  (1 src)    │        │
-│   └──────┬──────┘    └──────┬──────┘    └──────┬──────┘        │
-│          │                  │                  │                │
-│          └──────────────────┼──────────────────┘                │
-│                             ▼                                   │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │              DATA PIPELINE (Airflow)                     │  │
-│   │  Load → Validate → Transform → Schema Check → Bias Check │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                             │                                   │
-│          ┌──────────────────┼──────────────────┐               │
-│          ▼                  ▼                  ▼               │
-│   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐       │
-│   │   Local     │    │    GCS      │    │  BigQuery   │       │
-│   │   Files     │    │   Bucket    │    │   Tables    │       │
-│   └─────────────┘    └─────────────┘    └─────────────┘       │
-│                             │                                   │
-│                             ▼                                   │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │           MODEL TRAINING (Vertex AI) - Future            │  │
-│   │         LoRA Adapters per Entity Domain                  │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                             │                                   │
-│                             ▼                                   │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │          INFERENCE SERVICE (Cloud Run) - Future          │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                      ENTITY RESOLUTION SYSTEM                         │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                       │
+│   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐             │
+│   │   Person    │    │   Product   │    │ Publication │             │
+│   │  Datasets   │    │  Datasets   │    │  Datasets   │             │
+│   │  (3 srcs)   │    │  (2 srcs)   │    │  (1 src)    │             │
+│   └──────┬──────┘    └──────┬──────┘    └──────┬──────┘             │
+│          │                  │                  │                     │
+│          └──────────────────┼──────────────────┘                     │
+│                             ▼                                        │
+│   ┌──────────────────────────────────────────────────────────────┐  │
+│   │                 DATA PIPELINE (32 Airflow Tasks)              │  │
+│   │                                                               │  │
+│   │  ┌────────┐   ┌──────────┐   ┌───────────┐   ┌─────────┐    │  │
+│   │  │  Load  │ → │ Validate │ → │ Transform │ → │  Merge  │    │  │
+│   │  │(6 tasks)│   │ (6 tasks)│   │ (6 tasks) │   │         │    │  │
+│   │  └────────┘   └──────────┘   └───────────┘   └────┬────┘    │  │
+│   │                                                    │         │  │
+│   │                    ┌───────────────────────────────┘         │  │
+│   │                    ▼                                         │  │
+│   │  ┌─────────────────────────────────────────────────────┐    │  │
+│   │  │              VALIDATION PHASE                        │    │  │
+│   │  │  Schema Check │ Training Splits │ Bias Detection    │    │  │
+│   │  └─────────────────────────┬───────────────────────────┘    │  │
+│   │                            ▼                                 │  │
+│   │  ┌─────────────────────────────────────────────────────┐    │  │
+│   │  │              QUALITY GATE (Go/No-Go)                 │    │  │
+│   │  └─────────────────────────┬───────────────────────────┘    │  │
+│   │                            │                                 │  │
+│   └────────────────────────────┼─────────────────────────────────┘  │
+│                                │                                     │
+│              ┌─────────────────┼─────────────────┐                  │
+│              ▼                 ▼                 ▼                  │
+│   ┌─────────────────┐  ┌─────────────┐  ┌─────────────┐            │
+│   │  Local Files    │  │    GCS      │  │  BigQuery   │            │
+│   │  (training/)    │  │   Bucket    │  │   Tables    │            │
+│   └─────────────────┘  └─────────────┘  └─────────────┘            │
+│                                │                                     │
+│                                ▼                                     │
+│   ┌──────────────────────────────────────────────────────────────┐  │
+│   │            MODEL TRAINING (Vertex AI) - Future                │  │
+│   │          LoRA Adapters per Entity Domain                      │  │
+│   └──────────────────────────────────────────────────────────────┘  │
+│                                │                                     │
+│                                ▼                                     │
+│   ┌──────────────────────────────────────────────────────────────┐  │
+│   │           INFERENCE SERVICE (Cloud Run) - Future              │  │
+│   └──────────────────────────────────────────────────────────────┘  │
+│                                                                       │
+└──────────────────────────────────────────────────────────────────────┘
 ```
+
+### Training Data Output
+
+| Entity Type | Train | Val | Test | Total |
+|-------------|-------|-----|------|-------|
+| **PERSON** | 17,500 | 3,750 | 3,750 | 25,000 |
+| **PRODUCT** | 14,000 | 3,000 | 3,000 | 20,000 |
+| **PUBLICATION** | 7,000 | 1,500 | 1,500 | 10,000 |
 
 ---
 
