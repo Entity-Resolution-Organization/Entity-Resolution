@@ -25,6 +25,10 @@ x-airflow-common: &airflow-common
     BQ_DATASET: ${BQ_DATASET:-entity_resolution_bq}
     # Pipeline Mode - set to "false" for GCS/BigQuery production
     LOCAL_MODE: "true"
+    # Execution Mode: "local" (skip cloud) or "cloud" (upload to GCS/BigQuery)
+    EXECUTION_MODE: ${EXECUTION_MODE:-local}
+    # GCP Service Account Credentials (mounted from secrets/)
+    GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/secrets/gcp-sa-key.json
     # Python path for custom scripts
     PYTHONPATH: /opt/airflow/scripts
   volumes:
@@ -33,6 +37,7 @@ x-airflow-common: &airflow-common
     - ./config:/opt/airflow/config
     - ./data:/opt/airflow/data
     - ./logs:/opt/airflow/logs
+    - ./secrets:/opt/airflow/secrets:ro
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on: &airflow-common-depends-on
     postgres:
