@@ -192,7 +192,7 @@ pip install -r requirements.txt
 ### Step 3: Start Airflow
 
 ```bash
-# Start all services (Airflow, PostgreSQL, Redis)
+# Start all services (Airflow, PostgreSQL)
 docker compose up -d
 
 # Wait for services to initialize (~30 seconds)
@@ -214,8 +214,8 @@ data-pipeline-postgres-1            running
 
 Open your browser to: **http://localhost:8080**
 
-- **Username**: `airflow`
-- **Password**: `airflow`
+- **Username**: `admin`
+- **Password**: `admin`
 
 ### Step 5: Trigger the Pipeline
 

@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 USER airflow
 
-# Copy and install Python dependencies
+# Copy and install Python dependencies with Airflow constraints
 COPY requirements.txt /requirements.txt
-RUN pip install --no-cache-dir -r /requirements.txt
+ARG AIRFLOW_CONSTRAINTS_URL="https://raw.githubusercontent.com/apache/airflow/constraints-2.8.1/constraints-3.10.txt"
+RUN pip install --no-cache-dir -c "${AIRFLOW_CONSTRAINTS_URL}" -r /requirements.txt

@@ -86,6 +86,20 @@ class SchemaValidator:
         if missing_cols:
             return results
 
+        # Handle empty dataframe to avoid ZeroDivisionError
+        if len(df) == 0:
+            exp_result = {
+                "expectation": "expect_table_row_count_to_be_between",
+                "min_value": 1,
+                "max_value": None,
+                "success": False,
+                "details": {"row_count": 0},
+            }
+            results["expectations"].append(exp_result)
+            results["failed_expectations"].append(exp_result)
+            results["success"] = False
+            return results
+
         # ID not null check
         id_nulls = df["id"].isnull().sum()
         exp_result = {

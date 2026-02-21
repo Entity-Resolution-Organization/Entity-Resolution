@@ -68,7 +68,7 @@ cd Data-Pipeline
 # Start Airflow
 docker compose up -d
 
-# Access UI at http://localhost:8080 (airflow/airflow)
+# Access UI at http://localhost:8080 (admin/admin)
 
 # Trigger pipeline
 docker exec data-pipeline-airflow-scheduler-1 airflow dags trigger er_data_pipeline
