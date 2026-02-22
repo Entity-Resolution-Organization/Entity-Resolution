@@ -5,15 +5,16 @@ Architecture:
 - 6 parallel load tasks (one per dataset)
 - 6 parallel validation tasks (quality gate after load)
 - 6 parallel transform tasks (dataset-specific outputs)
-- Merge task (creates merged + entity-type aggregated datasets)
-- Split task (train/val/test splits for model training)
+- Parallel branches after transform:
+  - Branch A (Training): combine by entity type → create splits (3 parallel paths)
+  - Branch B (Analytics): merge all → bias detection
 - Validation tasks (schema + training splits)
 - Quality gate (go/no-go decision)
 - Conditional cloud upload (GCS + BigQuery)
 
 Output Structure:
 - data/processed/{dataset_name}/  - Per-dataset outputs
-- data/processed/merged/          - Combined analytics data
+- data/processed/merged/          - Combined analytics data (for bias detection)
 - data/training/{entity_type}/    - Training splits per entity type
 """
 
@@ -74,6 +75,13 @@ ENTITY_TYPE_MAP = {
     "wdc_products": "PRODUCT",
     "amazon_2018": "PRODUCT",
     "dblp_acm": "PUBLICATION",
+}
+
+# Entity type groupings for parallel processing
+ENTITY_GROUPS = {
+    "person": ["pseudopeople", "nc_voters", "ofac_sdn"],
+    "product": ["wdc_products", "amazon_2018"],
+    "publication": ["dblp_acm"],
 }
 
 # Validation thresholds
@@ -287,24 +295,22 @@ def transform_dataset(dataset_name: str, **context):
 
 
 # =============================================================================
-# PHASE 3: MERGE TASK
+# PHASE 3A: MERGE FOR ANALYTICS (runs in parallel with training branch)
 # =============================================================================
 
 
-def merge_datasets(**context):
+def merge_for_analytics(**context):
     """
-    Merge all datasets into:
-    1. data/processed/merged/ - Combined analytics data
-    2. data/training/{entity_type}/ - Entity-type aggregated for model training
+    Merge all datasets for analytics/bias detection only.
+    Training data is handled separately by entity-type-specific tasks.
     """
     ti = context["task_instance"]
     base_dir = get_base_dir()
 
-    print("[Merge] Collecting all dataset outputs...")
+    print("[Merge Analytics] Collecting all dataset outputs...")
 
     all_accounts = []
     all_pairs = []
-    entity_type_pairs = {"PERSON": [], "PRODUCT": [], "PUBLICATION": []}
 
     for dataset_name in DATASETS:
         try:
@@ -317,35 +323,30 @@ def merge_datasets(**context):
             )
 
             if not accounts_path or not pairs_path:
-                print(f"[Merge] WARNING: No data for {dataset_name}, skipping")
+                print(
+                    f"[Merge Analytics] WARNING: No data for {dataset_name}, skipping"
+                )
                 continue
 
             accounts_df = pd.read_csv(accounts_path)
             pairs_df = pd.read_csv(pairs_path)
 
-            entity_type = ENTITY_TYPE_MAP.get(dataset_name, "UNKNOWN")
-
             print(
-                f"[Merge] {dataset_name}: {len(accounts_df)} accounts, {len(pairs_df)} pairs"
+                f"[Merge Analytics] {dataset_name}: {len(accounts_df)} accounts, "
+                f"{len(pairs_df)} pairs"
             )
 
             all_accounts.append(accounts_df)
             all_pairs.append(pairs_df)
 
-            # Collect pairs by entity type for training splits
-            if entity_type in entity_type_pairs:
-                entity_type_pairs[entity_type].append(pairs_df)
-
         except Exception as e:
-            print(f"[Merge] ERROR loading {dataset_name}: {e}")
+            print(f"[Merge Analytics] ERROR loading {dataset_name}: {e}")
             continue
 
     if not all_accounts:
         raise ValueError("No datasets were successfully loaded for merging!")
 
-    # ===================
-    # STRUCTURE 1: Merged (for analytics/BigQuery)
-    # ===================
+    # Create merged output for analytics
     merged_dir = f"{base_dir}/processed/merged"
     os.makedirs(merged_dir, exist_ok=True)
 
@@ -358,11 +359,11 @@ def merge_datasets(**context):
     merged_accounts.to_csv(merged_accounts_path, index=False)
     merged_pairs.to_csv(merged_pairs_path, index=False)
 
-    print("\n[Merge] MERGED OUTPUT:")
+    print("\n[Merge Analytics] OUTPUT:")
     print(f"  - Accounts: {len(merged_accounts)} records -> {merged_accounts_path}")
     print(f"  - Pairs: {len(merged_pairs)} records -> {merged_pairs_path}")
 
-    # Entity distribution in merged data
+    # Entity distribution
     entity_dist = {}
     if "entity_type" in merged_accounts.columns:
         entity_dist = merged_accounts["entity_type"].value_counts().to_dict()
@@ -384,51 +385,6 @@ def merge_datasets(**context):
     with open(f"{merged_dir}/metadata.json", "w") as f:
         json.dump(merged_metadata, f, indent=2)
 
-    # ===================
-    # STRUCTURE 2: Entity-Type Aggregated (for model training)
-    # ===================
-    training_dir = f"{base_dir}/training"
-
-    for entity_type, pairs_list in entity_type_pairs.items():
-        if not pairs_list:
-            print(f"[Merge] No pairs for {entity_type}, skipping training output")
-            continue
-
-        entity_dir = f"{training_dir}/{entity_type.lower()}"
-        os.makedirs(entity_dir, exist_ok=True)
-
-        # Combine all pairs for this entity type
-        entity_pairs = pd.concat(pairs_list, ignore_index=True)
-        all_pairs_path = f"{entity_dir}/all_pairs.csv"
-        entity_pairs.to_csv(all_pairs_path, index=False)
-
-        print(f"\n[Merge] TRAINING OUTPUT ({entity_type}):")
-        print(f"  - All pairs: {len(entity_pairs)} -> {all_pairs_path}")
-
-        # Save entity-type metadata
-        entity_metadata = {
-            "entity_type": entity_type,
-            "total_pairs": len(entity_pairs),
-            "positive_pairs": (
-                int((entity_pairs["label"] == 1).sum())
-                if "label" in entity_pairs.columns
-                else 0
-            ),
-            "negative_pairs": (
-                int((entity_pairs["label"] == 0).sum())
-                if "label" in entity_pairs.columns
-                else 0
-            ),
-            "source_datasets": (
-                entity_pairs["source_dataset"].unique().tolist()
-                if "source_dataset" in entity_pairs.columns
-                else []
-            ),
-            "timestamp": datetime.now().isoformat(),
-        }
-        with open(f"{entity_dir}/metadata.json", "w") as f:
-            json.dump(entity_metadata, f, indent=2)
-
     # Push paths for downstream tasks
     ti.xcom_push(key="merged_accounts_path", value=merged_accounts_path)
     ti.xcom_push(key="merged_pairs_path", value=merged_pairs_path)
@@ -438,7 +394,184 @@ def merge_datasets(**context):
 
 
 # =============================================================================
-# PHASE 4: TRAIN/VAL/TEST SPLIT TASK
+# PHASE 3B: COMBINE ENTITY DATASETS (Training Branch - runs in parallel)
+# =============================================================================
+
+
+def combine_entity_datasets(entity_type: str, **context):
+    """
+    Combine datasets of the same entity type for training.
+    Runs in parallel with analytics merge.
+    """
+    ti = context["task_instance"]
+    base_dir = get_base_dir()
+    datasets = ENTITY_GROUPS.get(entity_type, [])
+
+    print(f"[Combine {entity_type.upper()}] Collecting datasets: {datasets}")
+
+    all_pairs = []
+
+    for dataset_name in datasets:
+        try:
+            pairs_path = ti.xcom_pull(
+                task_ids=f"transform_{dataset_name}", key=f"{dataset_name}_pairs_path"
+            )
+
+            if not pairs_path:
+                print(
+                    f"[Combine {entity_type.upper()}] WARNING: No pairs for {dataset_name}"
+                )
+                continue
+
+            pairs_df = pd.read_csv(pairs_path)
+            print(
+                f"[Combine {entity_type.upper()}] {dataset_name}: {len(pairs_df)} pairs"
+            )
+            all_pairs.append(pairs_df)
+
+        except Exception as e:
+            print(f"[Combine {entity_type.upper()}] ERROR loading {dataset_name}: {e}")
+            continue
+
+    if not all_pairs:
+        print(f"[Combine {entity_type.upper()}] No pairs found, creating empty output")
+        combined_pairs = pd.DataFrame()
+    else:
+        combined_pairs = pd.concat(all_pairs, ignore_index=True)
+
+    # Save combined pairs
+    entity_dir = f"{base_dir}/training/{entity_type}"
+    os.makedirs(entity_dir, exist_ok=True)
+
+    all_pairs_path = f"{entity_dir}/all_pairs.csv"
+    combined_pairs.to_csv(all_pairs_path, index=False)
+
+    print(f"\n[Combine {entity_type.upper()}] OUTPUT:")
+    print(f"  - All pairs: {len(combined_pairs)} -> {all_pairs_path}")
+
+    # Save metadata
+    entity_metadata = {
+        "entity_type": entity_type.upper(),
+        "total_pairs": len(combined_pairs),
+        "positive_pairs": (
+            int((combined_pairs["label"] == 1).sum())
+            if "label" in combined_pairs.columns and len(combined_pairs) > 0
+            else 0
+        ),
+        "negative_pairs": (
+            int((combined_pairs["label"] == 0).sum())
+            if "label" in combined_pairs.columns and len(combined_pairs) > 0
+            else 0
+        ),
+        "source_datasets": datasets,
+        "timestamp": datetime.now().isoformat(),
+    }
+    with open(f"{entity_dir}/metadata.json", "w") as f:
+        json.dump(entity_metadata, f, indent=2)
+
+    ti.xcom_push(key=f"{entity_type}_pairs_path", value=all_pairs_path)
+    ti.xcom_push(key=f"{entity_type}_count", value=len(combined_pairs))
+
+    return {"entity_type": entity_type, "pairs_count": len(combined_pairs)}
+
+
+# =============================================================================
+# PHASE 4: ENTITY-SPECIFIC TRAIN/VAL/TEST SPLITS
+# =============================================================================
+
+
+def create_entity_splits(entity_type: str, **context):
+    """
+    Create train/val/test splits for a specific entity type.
+    Split ratio: 70% train, 15% val, 15% test (stratified by label)
+    """
+    ti = context["task_instance"]
+    base_dir = get_base_dir()
+
+    entity_dir = f"{base_dir}/training/{entity_type}"
+    all_pairs_path = f"{entity_dir}/all_pairs.csv"
+
+    print(f"[Split {entity_type.upper()}] Creating train/val/test splits...")
+
+    if not os.path.exists(all_pairs_path):
+        print(f"[Split {entity_type.upper()}] No pairs file found, skipping")
+        ti.xcom_push(key=f"{entity_type}_split_summary", value={"skipped": True})
+        return {"entity_type": entity_type, "skipped": True}
+
+    pairs_df = pd.read_csv(all_pairs_path)
+    original_count = len(pairs_df)
+
+    if original_count == 0:
+        print(f"[Split {entity_type.upper()}] Empty pairs, skipping")
+        ti.xcom_push(key=f"{entity_type}_split_summary", value={"skipped": True})
+        return {"entity_type": entity_type, "skipped": True}
+
+    # Deduplicate pairs to prevent data leakage
+    pairs_df = pairs_df.drop_duplicates(subset=["id1", "id2"], keep="first")
+    total_pairs = len(pairs_df)
+
+    if original_count > total_pairs:
+        print(
+            f"[Split {entity_type.upper()}] Deduplicated: {original_count} -> {total_pairs}"
+        )
+
+    # Stratified split by label
+    if "label" in pairs_df.columns:
+        positive = pairs_df[pairs_df["label"] == 1].copy()
+        negative = pairs_df[pairs_df["label"] == 0].copy()
+
+        positive = positive.sample(frac=1, random_state=42).reset_index(drop=True)
+        negative = negative.sample(frac=1, random_state=42).reset_index(drop=True)
+
+        def split_data(df, train_ratio=0.7, val_ratio=0.15):
+            n = len(df)
+            train_end = int(n * train_ratio)
+            val_end = int(n * (train_ratio + val_ratio))
+            return df[:train_end], df[train_end:val_end], df[val_end:]
+
+        pos_train, pos_val, pos_test = split_data(positive)
+        neg_train, neg_val, neg_test = split_data(negative)
+
+        train_df = pd.concat([pos_train, neg_train]).sample(frac=1, random_state=42)
+        val_df = pd.concat([pos_val, neg_val]).sample(frac=1, random_state=42)
+        test_df = pd.concat([pos_test, neg_test]).sample(frac=1, random_state=42)
+    else:
+        pairs_df = pairs_df.sample(frac=1, random_state=42).reset_index(drop=True)
+        n = len(pairs_df)
+        train_end = int(n * 0.7)
+        val_end = int(n * 0.85)
+
+        train_df = pairs_df[:train_end]
+        val_df = pairs_df[train_end:val_end]
+        test_df = pairs_df[val_end:]
+
+    # Save splits
+    train_df.to_csv(f"{entity_dir}/train.csv", index=False)
+    val_df.to_csv(f"{entity_dir}/val.csv", index=False)
+    test_df.to_csv(f"{entity_dir}/test.csv", index=False)
+
+    print(f"[Split {entity_type.upper()}] OUTPUT:")
+    print(
+        f"  - train.csv: {len(train_df)} pairs ({len(train_df)/total_pairs*100:.1f}%)"
+    )
+    print(f"  - val.csv: {len(val_df)} pairs ({len(val_df)/total_pairs*100:.1f}%)")
+    print(f"  - test.csv: {len(test_df)} pairs ({len(test_df)/total_pairs*100:.1f}%)")
+
+    split_summary = {
+        "entity_type": entity_type,
+        "total": total_pairs,
+        "train": len(train_df),
+        "val": len(val_df),
+        "test": len(test_df),
+    }
+
+    ti.xcom_push(key=f"{entity_type}_split_summary", value=split_summary)
+
+    return split_summary
+
+
+# =============================================================================
+# LEGACY: TRAIN/VAL/TEST SPLIT TASK (kept for backward compatibility)
 # =============================================================================
 
 
@@ -1070,9 +1203,15 @@ with DAG(
     ## Overview
     Production-grade pipeline for multi-domain entity resolution data processing.
 
+    ## Architecture
+    After dataset transforms, two parallel branches execute:
+    - **Training Branch**: Combines datasets by entity type → creates splits
+    - **Analytics Branch**: Merges all data → bias detection + schema validation
+
     ## Features
     - 6 parallel dataset processing (PERSON, PRODUCT, PUBLICATION)
     - Per-dataset validation gates
+    - Parallel training and analytics branches
     - Training split validation (70/15/15)
     - Quality gate with go/no-go decision
     - Conditional cloud upload (GCS + BigQuery)
@@ -1130,45 +1269,76 @@ with DAG(
         validate_raw_tasks[dataset_name] >> transform_tasks[dataset_name]
 
     # ===================
-    # MERGE TASK (waits for all transforms)
+    # PARALLEL BRANCH A: TRAINING DATA (by entity type)
     # ===================
-    merge_task = PythonOperator(
-        task_id="merge_datasets",
-        python_callable=merge_datasets,
-    )
+    with TaskGroup(
+        "training_branch", tooltip="Training data by entity type"
+    ) as training_group:
+        combine_tasks = {}
+        split_tasks = {}
+
+        for entity_type in ENTITY_GROUPS.keys():
+            # Combine datasets of same entity type
+            combine_tasks[entity_type] = PythonOperator(
+                task_id=f"combine_{entity_type}",
+                python_callable=combine_entity_datasets,
+                op_kwargs={"entity_type": entity_type},
+            )
+
+            # Create train/val/test splits
+            split_tasks[entity_type] = PythonOperator(
+                task_id=f"split_{entity_type}",
+                python_callable=create_entity_splits,
+                op_kwargs={"entity_type": entity_type},
+            )
+
+            # Dependency: combine -> split
+            combine_tasks[entity_type] >> split_tasks[entity_type]
+
+    # Connect transforms to combine tasks
+    for entity_type, datasets in ENTITY_GROUPS.items():
+        for dataset_name in datasets:
+            transform_tasks[dataset_name] >> combine_tasks[entity_type]
+
+    # ===================
+    # PARALLEL BRANCH B: ANALYTICS (merge all for bias detection)
+    # ===================
+    with TaskGroup(
+        "analytics_branch", tooltip="Merged data for analytics"
+    ) as analytics_group:
+        merge_task = PythonOperator(
+            task_id="merge_for_analytics",
+            python_callable=merge_for_analytics,
+        )
+
+        bias_task = PythonOperator(
+            task_id="bias_detection",
+            python_callable=bias_detection,
+        )
+
+        schema_task = PythonOperator(
+            task_id="schema_validation",
+            python_callable=schema_validation,
+        )
+
+        merge_task >> bias_task
+        merge_task >> schema_task
+
+    # Connect all transforms to merge task
     for dataset_name in DATASETS:
         transform_tasks[dataset_name] >> merge_task
 
     # ===================
-    # TRAINING SPLITS TASK
+    # VALIDATE TRAINING SPLITS (waits for all entity splits)
     # ===================
-    split_task = PythonOperator(
-        task_id="create_training_splits",
-        python_callable=create_training_splits,
-    )
-    merge_task >> split_task
-
-    # ===================
-    # VALIDATION TASKS (parallel after merge/split)
-    # ===================
-    schema_task = PythonOperator(
-        task_id="schema_validation",
-        python_callable=schema_validation,
-    )
-
     validate_splits_task = PythonOperator(
         task_id="validate_training_splits",
         python_callable=validate_training_splits,
     )
 
-    bias_task = PythonOperator(
-        task_id="bias_detection",
-        python_callable=bias_detection,
-    )
-
-    merge_task >> schema_task
-    split_task >> validate_splits_task
-    merge_task >> bias_task
+    # All split tasks must complete before validation
+    for entity_type in ENTITY_GROUPS.keys():
+        split_tasks[entity_type] >> validate_splits_task
 
     # ===================
     # QUALITY GATE (waits for all validations)
