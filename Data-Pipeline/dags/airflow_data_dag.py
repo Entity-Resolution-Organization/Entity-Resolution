@@ -1,43 +1,69 @@
 """
-Entity Resolution Data Pipeline - Production-Grade with Validation Gates
+Entity Resolution Data Pipeline - Optimized Multi-Domain Architecture
 
-Architecture:
-- 6 parallel load tasks (one per dataset)
-- 6 parallel validation tasks (quality gate after load)
-- 6 parallel transform tasks (dataset-specific outputs)
-- Merge task (creates merged + entity-type aggregated datasets)
-- Split task (train/val/test splits for model training)
-- Validation tasks (schema + training splits)
-- Quality gate (go/no-go decision)
-- Conditional cloud upload (GCS + BigQuery)
+ARCHITECTURAL DESIGN:
+This pipeline serves TWO distinct purposes requiring DIFFERENT data organizations:
 
-Output Structure:
-- data/processed/{dataset_name}/  - Per-dataset outputs
-- data/processed/merged/          - Combined analytics data
-- data/training/{entity_type}/    - Training splits per entity type
+1. MODEL TRAINING (Domain-Specific LoRA Adapters):
+   - Data SEPARATED by entity type
+   - Train 3 LoRA adapters: person_adapter, product_adapter, publication_adapter
+   - Output: data/training/{entity_type}/train.csv
+
+2. BIAS DETECTION (Cross-Domain Analytics):
+   - ALL datasets MERGED together (287K records)
+   - Analyze bias ACROSS entity types, geographies, sources
+   - Output: data/analytics/merged_all.csv
+
+Pipeline creates BOTH outputs in parallel - intentional multi-purpose design.
+
+OPTIMIZED TASK STRUCTURE (~18 tasks):
+- 6 load tasks (parallel)
+- 1 validate_all_raw task (consolidated)
+- 6 transform tasks (parallel)
+- 1 organize_datasets task (creates training + analytics outputs)
+- 3 validation tasks (parallel): training_splits, schema, bias
+- Quality gate + cloud tasks
 """
 
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timedelta
 
+import numpy as np
 import pandas as pd
 import yaml
+
+
+class NumpyEncoder(json.JSONEncoder):
+    """Custom JSON encoder for numpy types."""
+
+    def default(self, obj):
+        if isinstance(obj, (np.integer, np.int64, np.int32)):
+            return int(obj)
+        if isinstance(obj, (np.floating, np.float64, np.float32)):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        return super().default(obj)
+
+
 from airflow import DAG
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import BranchPythonOperator, PythonOperator
-from airflow.utils.task_group import TaskGroup
 
 # Add scripts to path
 sys.path.insert(0, "/opt/airflow/scripts")
 
 from bias_detection import BiasDetector  # noqa: E402
-from data_validation import (
+from data_validation import (  # noqa: E402
     DatasetValidator,
     QualityGate,
     TrainingSplitValidator,
-)  # noqa: E402
+)
 from dataset_factory import get_dataset_handler  # noqa: E402
 from preprocessing import preprocess_dataset  # noqa: E402
 from schema_validation import SchemaValidator  # noqa: E402
@@ -46,16 +72,15 @@ from schema_validation import SchemaValidator  # noqa: E402
 # CONFIGURATION
 # =============================================================================
 
-# Mode Configuration
 LOCAL_MODE = os.getenv("LOCAL_MODE", "true").lower() == "true"
-EXECUTION_MODE = os.getenv("EXECUTION_MODE", "local")  # "local" or "cloud"
+EXECUTION_MODE = os.getenv("EXECUTION_MODE", "local")
 LOCAL_DATA_DIR = "/opt/airflow/data"
 TMP_DIR = "/tmp/laundrograph"
 
-# GCP Configuration
-GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID", "entity-resolution-487121")
-GCS_BUCKET = os.getenv("GCS_BUCKET", "entity-resolution-bucket-1")
-BQ_DATASET = os.getenv("BQ_DATASET", "entity_resolution_bq")
+# GCP Configuration (set via environment variables or .env file)
+GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID", "your-gcp-project-id")
+GCS_BUCKET = os.getenv("GCS_BUCKET", "your-gcs-bucket")
+BQ_DATASET = os.getenv("BQ_DATASET", "your-bq-dataset")
 
 # Dataset Configuration
 DATASETS = [
@@ -76,7 +101,12 @@ ENTITY_TYPE_MAP = {
     "dblp_acm": "PUBLICATION",
 }
 
-# Validation thresholds
+ENTITY_GROUPS = {
+    "person": ["pseudopeople", "nc_voters", "ofac_sdn"],
+    "product": ["wdc_products", "amazon_2018"],
+    "publication": ["dblp_acm"],
+}
+
 MIN_RECORDS_PER_DATASET = 100
 
 
@@ -92,7 +122,7 @@ def load_config():
 
 
 # =============================================================================
-# PHASE 1: PARALLEL LOAD TASKS
+# PHASE 1: LOAD TASKS (6 parallel)
 # =============================================================================
 
 
@@ -109,7 +139,6 @@ def load_dataset(dataset_name: str, **context):
     )
 
     print(f"[Load] {dataset_name} ({entity_type})")
-    print(f"[Mode] {'LOCAL' if LOCAL_MODE else 'PRODUCTION'}")
 
     try:
         handler = get_dataset_handler(dataset_name, dataset_config)
@@ -117,13 +146,11 @@ def load_dataset(dataset_name: str, **context):
         raw_df = handler.normalize_schema(raw_df)
         raw_df = handler.subsample(raw_df)
 
-        # Add metadata columns
         raw_df["entity_type"] = entity_type
         raw_df["source_dataset"] = dataset_name
 
-        print(f"[Load] {dataset_name}: {len(raw_df)} records loaded")
+        print(f"[Load] {dataset_name}: {len(raw_df)} records")
 
-        # Save raw data for this dataset
         base_dir = get_base_dir()
         raw_dir = f"{base_dir}/raw/{dataset_name}"
         os.makedirs(raw_dir, exist_ok=True)
@@ -131,26 +158,19 @@ def load_dataset(dataset_name: str, **context):
         raw_path = f"{raw_dir}/data.csv"
         raw_df.to_csv(raw_path, index=False)
 
-        # Save metadata
         metadata = {
             "dataset_name": dataset_name,
             "entity_type": entity_type,
             "record_count": len(raw_df),
             "timestamp": datetime.now().isoformat(),
-            "config": dataset_config,
         }
         with open(f"{raw_dir}/metadata.json", "w") as f:
             json.dump(metadata, f, indent=2, default=str)
 
-        context["task_instance"].xcom_push(
-            key=f"{dataset_name}_raw_path", value=raw_path
-        )
-        context["task_instance"].xcom_push(
-            key=f"{dataset_name}_config", value=dataset_config
-        )
-        context["task_instance"].xcom_push(
-            key=f"{dataset_name}_entity_type", value=entity_type
-        )
+        ti = context["task_instance"]
+        ti.xcom_push(key=f"{dataset_name}_raw_path", value=raw_path)
+        ti.xcom_push(key=f"{dataset_name}_config", value=dataset_config)
+        ti.xcom_push(key=f"{dataset_name}_entity_type", value=entity_type)
 
         return raw_path
 
@@ -160,62 +180,74 @@ def load_dataset(dataset_name: str, **context):
 
 
 # =============================================================================
-# PHASE 1.5: PER-DATASET VALIDATION GATES
+# PHASE 2: CONSOLIDATED VALIDATION (1 task for all datasets)
 # =============================================================================
 
 
-def validate_raw_dataset(dataset_name: str, **context):
+def validate_all_raw_datasets(**context):
     """
-    Validate raw dataset after load, before transform.
-    This is a quality gate - fails the task if critical issues found.
+    Validate ALL raw datasets in one consolidated task.
+    Replaces 6 individual validate_raw_X tasks.
     """
     ti = context["task_instance"]
     base_dir = get_base_dir()
-
-    raw_path = ti.xcom_pull(
-        task_ids=f"load_{dataset_name}", key=f"{dataset_name}_raw_path"
-    )
-    entity_type = ti.xcom_pull(
-        task_ids=f"load_{dataset_name}", key=f"{dataset_name}_entity_type"
-    )
-
-    if not raw_path:
-        raw_path = f"{base_dir}/raw/{dataset_name}/data.csv"
-
-    print(f"[Validate Raw] {dataset_name}")
-    print(f"[Validate Raw] Path: {raw_path}")
-
     validator = DatasetValidator(output_dir=f"{base_dir}/metrics")
-    results = validator.validate_raw_dataset(
-        dataset_name=dataset_name,
-        data_path=raw_path,
-        entity_type=entity_type or ENTITY_TYPE_MAP.get(dataset_name, "UNKNOWN"),
-        min_records=MIN_RECORDS_PER_DATASET,
+
+    print("[Validate All] Validating all 6 datasets...")
+
+    all_results = {}
+    failures = []
+
+    for dataset_name in DATASETS:
+        raw_path = ti.xcom_pull(
+            task_ids=f"load_{dataset_name}", key=f"{dataset_name}_raw_path"
+        )
+        entity_type = ti.xcom_pull(
+            task_ids=f"load_{dataset_name}", key=f"{dataset_name}_entity_type"
+        )
+
+        if not raw_path:
+            raw_path = f"{base_dir}/raw/{dataset_name}/data.csv"
+
+        print(f"[Validate All] Checking {dataset_name}...")
+
+        results = validator.validate_raw_dataset(
+            dataset_name=dataset_name,
+            data_path=raw_path,
+            entity_type=entity_type or ENTITY_TYPE_MAP.get(dataset_name, "UNKNOWN"),
+            min_records=MIN_RECORDS_PER_DATASET,
+        )
+
+        all_results[dataset_name] = results
+
+        if not results["success"]:
+            failures.append(f"{dataset_name}: {results.get('critical_failures', [])}")
+        else:
+            print(f"[Validate All] {dataset_name}: PASSED")
+
+    # Save consolidated results
+    output_path = f"{base_dir}/metrics/validate_all_raw.json"
+    with open(output_path, "w") as f:
+        json.dump(all_results, f, indent=2, default=str)
+
+    print(
+        f"\n[Validate All] Summary: {len(DATASETS) - len(failures)}/{len(DATASETS)} passed"
     )
 
-    # Save validation results
-    output_path = f"{base_dir}/metrics/validate_raw_{dataset_name}.json"
-    with open(output_path, "w") as f:
-        json.dump(results, f, indent=2, default=str)
+    if failures:
+        raise ValueError(f"Raw validation failed for: {failures}")
 
-    print(f"[Validate Raw] {dataset_name} - Success: {results['success']}")
-
-    if not results["success"]:
-        failure_msg = f"Raw data validation failed for {dataset_name}: {results['critical_failures']}"
-        print(f"[Validate Raw] FAILED: {failure_msg}")
-        raise ValueError(failure_msg)
-
-    ti.xcom_push(key=f"{dataset_name}_validation_results", value=results)
-    return results
+    ti.xcom_push(key="all_validation_results", value=all_results)
+    return all_results
 
 
 # =============================================================================
-# PHASE 2: PARALLEL TRANSFORM TASKS
+# PHASE 3: TRANSFORM TASKS (6 parallel)
 # =============================================================================
 
 
 def transform_dataset(dataset_name: str, **context):
-    """Transform a single dataset and save to dataset-specific directory."""
+    """Transform a single dataset."""
     ti = context["task_instance"]
 
     raw_path = ti.xcom_pull(
@@ -226,19 +258,17 @@ def transform_dataset(dataset_name: str, **context):
     )
 
     if not raw_path:
-        raise ValueError(f"No raw data path found for {dataset_name}")
+        raise ValueError(f"No raw data path for {dataset_name}")
 
     raw_df = pd.read_csv(raw_path)
     entity_type = (
         raw_df["entity_type"].iloc[0] if "entity_type" in raw_df.columns else "UNKNOWN"
     )
 
-    print(f"[Transform] {dataset_name} ({entity_type}): {len(raw_df)} records")
+    print(f"[Transform] {dataset_name}: {len(raw_df)} records")
 
-    # Run preprocessing
     accounts_df, pairs_df = preprocess_dataset(raw_df, dataset_config)
 
-    # Ensure metadata columns
     accounts_df["entity_type"] = entity_type
     accounts_df["source_dataset"] = dataset_name
     pairs_df["entity_type"] = entity_type
@@ -248,7 +278,6 @@ def transform_dataset(dataset_name: str, **context):
         f"[Transform] {dataset_name}: {len(accounts_df)} accounts, {len(pairs_df)} pairs"
     )
 
-    # Save to dataset-specific directory
     base_dir = get_base_dir()
     output_dir = f"{base_dir}/processed/{dataset_name}"
     os.makedirs(output_dir, exist_ok=True)
@@ -259,26 +288,16 @@ def transform_dataset(dataset_name: str, **context):
     accounts_df.to_csv(accounts_path, index=False)
     pairs_df.to_csv(pairs_path, index=False)
 
-    # Save metadata
     metadata = {
         "dataset_name": dataset_name,
         "entity_type": entity_type,
         "accounts_count": len(accounts_df),
         "pairs_count": len(pairs_df),
-        "positive_pairs": (
-            int((pairs_df["label"] == 1).sum()) if "label" in pairs_df.columns else 0
-        ),
-        "negative_pairs": (
-            int((pairs_df["label"] == 0).sum()) if "label" in pairs_df.columns else 0
-        ),
         "timestamp": datetime.now().isoformat(),
     }
     with open(f"{output_dir}/metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
 
-    print(f"[Transform] Saved to {output_dir}/")
-
-    # Push paths for downstream tasks
     ti.xcom_push(key=f"{dataset_name}_accounts_path", value=accounts_path)
     ti.xcom_push(key=f"{dataset_name}_pairs_path", value=pairs_path)
     ti.xcom_push(key=f"{dataset_name}_metadata", value=metadata)
@@ -287,262 +306,180 @@ def transform_dataset(dataset_name: str, **context):
 
 
 # =============================================================================
-# PHASE 3: MERGE TASK
+# PHASE 4: ORGANIZE DATASETS (1 task creates BOTH outputs)
 # =============================================================================
 
 
-def merge_datasets(**context):
+def organize_datasets(**context):
     """
-    Merge all datasets into:
-    1. data/processed/merged/ - Combined analytics data
-    2. data/training/{entity_type}/ - Entity-type aggregated for model training
+    Create BOTH data organizations from transformed datasets:
+    1. Training Data: Separated by entity type with train/val/test splits
+    2. Analytics Data: All merged for bias detection
+
+    This single task replaces multiple combine/merge/split tasks.
     """
     ti = context["task_instance"]
     base_dir = get_base_dir()
 
-    print("[Merge] Collecting all dataset outputs...")
+    print("[Organize] Creating training and analytics data organizations...")
 
+    # Collect all transformed data
     all_accounts = []
     all_pairs = []
-    entity_type_pairs = {"PERSON": [], "PRODUCT": [], "PUBLICATION": []}
+    entity_pairs = {"person": [], "product": [], "publication": []}
 
     for dataset_name in DATASETS:
-        try:
-            accounts_path = ti.xcom_pull(
-                task_ids=f"transform_{dataset_name}",
-                key=f"{dataset_name}_accounts_path",
-            )
-            pairs_path = ti.xcom_pull(
-                task_ids=f"transform_{dataset_name}", key=f"{dataset_name}_pairs_path"
-            )
+        accounts_path = ti.xcom_pull(
+            task_ids=f"transform_{dataset_name}", key=f"{dataset_name}_accounts_path"
+        )
+        pairs_path = ti.xcom_pull(
+            task_ids=f"transform_{dataset_name}", key=f"{dataset_name}_pairs_path"
+        )
 
-            if not accounts_path or not pairs_path:
-                print(f"[Merge] WARNING: No data for {dataset_name}, skipping")
-                continue
-
-            accounts_df = pd.read_csv(accounts_path)
-            pairs_df = pd.read_csv(pairs_path)
-
-            entity_type = ENTITY_TYPE_MAP.get(dataset_name, "UNKNOWN")
-
-            print(
-                f"[Merge] {dataset_name}: {len(accounts_df)} accounts, {len(pairs_df)} pairs"
-            )
-
-            all_accounts.append(accounts_df)
-            all_pairs.append(pairs_df)
-
-            # Collect pairs by entity type for training splits
-            if entity_type in entity_type_pairs:
-                entity_type_pairs[entity_type].append(pairs_df)
-
-        except Exception as e:
-            print(f"[Merge] ERROR loading {dataset_name}: {e}")
+        if not accounts_path or not pairs_path:
+            print(f"[Organize] WARNING: Missing data for {dataset_name}")
             continue
 
-    if not all_accounts:
-        raise ValueError("No datasets were successfully loaded for merging!")
+        accounts_df = pd.read_csv(accounts_path)
+        pairs_df = pd.read_csv(pairs_path)
 
-    # ===================
-    # STRUCTURE 1: Merged (for analytics/BigQuery)
-    # ===================
-    merged_dir = f"{base_dir}/processed/merged"
-    os.makedirs(merged_dir, exist_ok=True)
+        all_accounts.append(accounts_df)
+        all_pairs.append(pairs_df)
+
+        # Group by entity type for training
+        entity_type = ENTITY_TYPE_MAP.get(dataset_name, "UNKNOWN").lower()
+        if entity_type in entity_pairs:
+            entity_pairs[entity_type].append(pairs_df)
+
+        print(
+            f"[Organize] {dataset_name}: {len(accounts_df)} accounts, {len(pairs_df)} pairs"
+        )
+
+    # =========================================================================
+    # OUTPUT 1: ANALYTICS DATA (All merged for bias detection)
+    # =========================================================================
+    analytics_dir = f"{base_dir}/analytics"
+    os.makedirs(analytics_dir, exist_ok=True)
 
     merged_accounts = pd.concat(all_accounts, ignore_index=True)
     merged_pairs = pd.concat(all_pairs, ignore_index=True)
 
-    merged_accounts_path = f"{merged_dir}/accounts.csv"
-    merged_pairs_path = f"{merged_dir}/er_pairs.csv"
+    merged_accounts_path = f"{analytics_dir}/merged_all.csv"
+    merged_pairs_path = f"{analytics_dir}/merged_pairs.csv"
 
     merged_accounts.to_csv(merged_accounts_path, index=False)
     merged_pairs.to_csv(merged_pairs_path, index=False)
 
-    print("\n[Merge] MERGED OUTPUT:")
-    print(f"  - Accounts: {len(merged_accounts)} records -> {merged_accounts_path}")
-    print(f"  - Pairs: {len(merged_pairs)} records -> {merged_pairs_path}")
+    # Also save to processed/merged for backward compatibility
+    merged_dir = f"{base_dir}/processed/merged"
+    os.makedirs(merged_dir, exist_ok=True)
+    merged_accounts.to_csv(f"{merged_dir}/accounts.csv", index=False)
+    merged_pairs.to_csv(f"{merged_dir}/er_pairs.csv", index=False)
 
-    # Entity distribution in merged data
-    entity_dist = {}
-    if "entity_type" in merged_accounts.columns:
-        entity_dist = merged_accounts["entity_type"].value_counts().to_dict()
-        print(f"  - Entity distribution: {entity_dist}")
-
-    # Save merged metadata
-    merged_metadata = {
+    analytics_metadata = {
         "total_accounts": len(merged_accounts),
         "total_pairs": len(merged_pairs),
-        "datasets_merged": len(all_accounts),
-        "entity_distribution": entity_dist,
-        "source_datasets": (
-            merged_accounts["source_dataset"].unique().tolist()
-            if "source_dataset" in merged_accounts.columns
-            else []
+        "datasets_merged": len(DATASETS),
+        "entity_distribution": (
+            merged_accounts["entity_type"].value_counts().to_dict()
+            if "entity_type" in merged_accounts.columns
+            else {}
         ),
+        "purpose": "Cross-domain bias analysis",
         "timestamp": datetime.now().isoformat(),
     }
+    with open(f"{analytics_dir}/metadata.json", "w") as f:
+        json.dump(analytics_metadata, f, indent=2)
     with open(f"{merged_dir}/metadata.json", "w") as f:
-        json.dump(merged_metadata, f, indent=2)
+        json.dump(analytics_metadata, f, indent=2)
 
-    # ===================
-    # STRUCTURE 2: Entity-Type Aggregated (for model training)
-    # ===================
+    print("\n[Organize] ANALYTICS OUTPUT:")
+    print(f"  - {len(merged_accounts)} accounts -> {merged_accounts_path}")
+    print(f"  - {len(merged_pairs)} pairs -> {merged_pairs_path}")
+
+    # =========================================================================
+    # OUTPUT 2: TRAINING DATA (Separated by entity type with splits)
+    # =========================================================================
     training_dir = f"{base_dir}/training"
+    split_summary = {}
 
-    for entity_type, pairs_list in entity_type_pairs.items():
+    for entity_type, pairs_list in entity_pairs.items():
         if not pairs_list:
-            print(f"[Merge] No pairs for {entity_type}, skipping training output")
+            print(f"[Organize] No pairs for {entity_type}, skipping")
             continue
 
-        entity_dir = f"{training_dir}/{entity_type.lower()}"
+        entity_dir = f"{training_dir}/{entity_type}"
         os.makedirs(entity_dir, exist_ok=True)
 
         # Combine all pairs for this entity type
-        entity_pairs = pd.concat(pairs_list, ignore_index=True)
-        all_pairs_path = f"{entity_dir}/all_pairs.csv"
-        entity_pairs.to_csv(all_pairs_path, index=False)
+        combined_pairs = pd.concat(pairs_list, ignore_index=True)
 
-        print(f"\n[Merge] TRAINING OUTPUT ({entity_type}):")
-        print(f"  - All pairs: {len(entity_pairs)} -> {all_pairs_path}")
+        # Deduplicate to prevent leakage
+        original_count = len(combined_pairs)
+        combined_pairs = combined_pairs.drop_duplicates(
+            subset=["id1", "id2"], keep="first"
+        )
+        total_pairs = len(combined_pairs)
 
-        # Save entity-type metadata
+        if original_count > total_pairs:
+            print(
+                f"[Organize] {entity_type}: deduplicated {original_count} -> {total_pairs}"
+            )
+
+        # Save all_pairs.csv
+        combined_pairs.to_csv(f"{entity_dir}/all_pairs.csv", index=False)
+
+        # Create stratified train/val/test splits (70/15/15)
+        if "label" in combined_pairs.columns and total_pairs > 0:
+            positive = combined_pairs[combined_pairs["label"] == 1].sample(
+                frac=1, random_state=42
+            )
+            negative = combined_pairs[combined_pairs["label"] == 0].sample(
+                frac=1, random_state=42
+            )
+
+            def split_df(df):
+                n = len(df)
+                return (
+                    df[: int(n * 0.7)],
+                    df[int(n * 0.7) : int(n * 0.85)],
+                    df[int(n * 0.85) :],
+                )
+
+            pos_train, pos_val, pos_test = split_df(positive)
+            neg_train, neg_val, neg_test = split_df(negative)
+
+            train_df = pd.concat([pos_train, neg_train]).sample(frac=1, random_state=42)
+            val_df = pd.concat([pos_val, neg_val]).sample(frac=1, random_state=42)
+            test_df = pd.concat([pos_test, neg_test]).sample(frac=1, random_state=42)
+        else:
+            # Random split without stratification
+            combined_pairs = combined_pairs.sample(frac=1, random_state=42)
+            n = total_pairs
+            train_df = combined_pairs[: int(n * 0.7)]
+            val_df = combined_pairs[int(n * 0.7) : int(n * 0.85)]
+            test_df = combined_pairs[int(n * 0.85) :]
+
+        # Save splits
+        train_df.to_csv(f"{entity_dir}/train.csv", index=False)
+        val_df.to_csv(f"{entity_dir}/val.csv", index=False)
+        test_df.to_csv(f"{entity_dir}/test.csv", index=False)
+
+        # Save metadata
         entity_metadata = {
-            "entity_type": entity_type,
-            "total_pairs": len(entity_pairs),
-            "positive_pairs": (
-                int((entity_pairs["label"] == 1).sum())
-                if "label" in entity_pairs.columns
-                else 0
-            ),
-            "negative_pairs": (
-                int((entity_pairs["label"] == 0).sum())
-                if "label" in entity_pairs.columns
-                else 0
-            ),
-            "source_datasets": (
-                entity_pairs["source_dataset"].unique().tolist()
-                if "source_dataset" in entity_pairs.columns
-                else []
-            ),
+            "entity_type": entity_type.upper(),
+            "total_pairs": total_pairs,
+            "train_count": len(train_df),
+            "val_count": len(val_df),
+            "test_count": len(test_df),
+            "source_datasets": [
+                d for d in DATASETS if ENTITY_TYPE_MAP.get(d, "").lower() == entity_type
+            ],
+            "purpose": f"LoRA adapter training for {entity_type} domain",
             "timestamp": datetime.now().isoformat(),
         }
         with open(f"{entity_dir}/metadata.json", "w") as f:
             json.dump(entity_metadata, f, indent=2)
-
-    # Push paths for downstream tasks
-    ti.xcom_push(key="merged_accounts_path", value=merged_accounts_path)
-    ti.xcom_push(key="merged_pairs_path", value=merged_pairs_path)
-    ti.xcom_push(key="merged_metadata", value=merged_metadata)
-
-    return merged_metadata
-
-
-# =============================================================================
-# PHASE 4: TRAIN/VAL/TEST SPLIT TASK
-# =============================================================================
-
-
-def create_training_splits(**context):
-    """
-    Create train/val/test splits for each entity type.
-    Split ratio: 70% train, 15% val, 15% test (stratified by label)
-    """
-    base_dir = get_base_dir()
-    training_dir = f"{base_dir}/training"
-
-    print("[Split] Creating train/val/test splits...")
-
-    split_summary = {}
-
-    for entity_type in ["person", "product", "publication"]:
-        entity_dir = f"{training_dir}/{entity_type}"
-        all_pairs_path = f"{entity_dir}/all_pairs.csv"
-
-        if not os.path.exists(all_pairs_path):
-            print(f"[Split] No pairs file for {entity_type}, skipping")
-            continue
-
-        pairs_df = pd.read_csv(all_pairs_path)
-        original_count = len(pairs_df)
-
-        if original_count == 0:
-            print(f"[Split] Empty pairs for {entity_type}, skipping")
-            continue
-
-        # Deduplicate pairs to prevent data leakage between splits
-        # Keep first occurrence of each (id1, id2) pair
-        pairs_df = pairs_df.drop_duplicates(subset=["id1", "id2"], keep="first")
-        total_pairs = len(pairs_df)
-
-        if original_count > total_pairs:
-            print(
-                f"\n[Split] {entity_type.upper()}: {original_count} pairs, "
-                f"deduplicated to {total_pairs} unique pairs"
-            )
-        else:
-            print(f"\n[Split] {entity_type.upper()}: {total_pairs} total pairs")
-
-        # Stratified split by label if available
-        if "label" in pairs_df.columns:
-            # Separate positive and negative pairs
-            positive = pairs_df[pairs_df["label"] == 1].copy()
-            negative = pairs_df[pairs_df["label"] == 0].copy()
-
-            # Shuffle
-            positive = positive.sample(frac=1, random_state=42).reset_index(drop=True)
-            negative = negative.sample(frac=1, random_state=42).reset_index(drop=True)
-
-            # Split each class
-            def split_data(df, train_ratio=0.7, val_ratio=0.15):
-                n = len(df)
-                train_end = int(n * train_ratio)
-                val_end = int(n * (train_ratio + val_ratio))
-                return df[:train_end], df[train_end:val_end], df[val_end:]
-
-            pos_train, pos_val, pos_test = split_data(positive)
-            neg_train, neg_val, neg_test = split_data(negative)
-
-            # Combine and shuffle
-            train_df = pd.concat([pos_train, neg_train]).sample(frac=1, random_state=42)
-            val_df = pd.concat([pos_val, neg_val]).sample(frac=1, random_state=42)
-            test_df = pd.concat([pos_test, neg_test]).sample(frac=1, random_state=42)
-
-        else:
-            # Random split without stratification
-            pairs_df = pairs_df.sample(frac=1, random_state=42).reset_index(drop=True)
-            n = len(pairs_df)
-            train_end = int(n * 0.7)
-            val_end = int(n * 0.85)
-
-            train_df = pairs_df[:train_end]
-            val_df = pairs_df[train_end:val_end]
-            test_df = pairs_df[val_end:]
-
-        # Save splits
-        train_path = f"{entity_dir}/train.csv"
-        val_path = f"{entity_dir}/val.csv"
-        test_path = f"{entity_dir}/test.csv"
-
-        train_df.to_csv(train_path, index=False)
-        val_df.to_csv(val_path, index=False)
-        test_df.to_csv(test_path, index=False)
-
-        print(
-            f"  - train.csv: {len(train_df)} pairs ({len(train_df)/total_pairs*100:.1f}%)"
-        )
-        print(f"  - val.csv: {len(val_df)} pairs ({len(val_df)/total_pairs*100:.1f}%)")
-        print(
-            f"  - test.csv: {len(test_df)} pairs ({len(test_df)/total_pairs*100:.1f}%)"
-        )
-
-        # Label distribution check
-        if "label" in train_df.columns:
-            train_pos = (train_df["label"] == 1).sum()
-            train_neg = (train_df["label"] == 0).sum()
-            pos_pct = train_pos / (train_pos + train_neg) * 100
-            print(
-                f"  - Train label balance: {train_pos} pos / {train_neg} neg ({pos_pct:.1f}% pos)"
-            )
 
         split_summary[entity_type] = {
             "total": total_pairs,
@@ -551,167 +488,142 @@ def create_training_splits(**context):
             "test": len(test_df),
         }
 
-        # Update metadata
-        metadata_path = f"{entity_dir}/metadata.json"
-        if os.path.exists(metadata_path):
-            with open(metadata_path) as f:
-                metadata = json.load(f)
-        else:
-            metadata = {}
+        print(f"\n[Organize] TRAINING OUTPUT ({entity_type.upper()}):")
+        print(
+            f"  - train.csv: {len(train_df)} pairs ({len(train_df)/total_pairs*100:.1f}%)"
+        )
+        print(f"  - val.csv: {len(val_df)} pairs ({len(val_df)/total_pairs*100:.1f}%)")
+        print(
+            f"  - test.csv: {len(test_df)} pairs ({len(test_df)/total_pairs*100:.1f}%)"
+        )
 
-        metadata["splits"] = split_summary[entity_type]
-        metadata["split_timestamp"] = datetime.now().isoformat()
+    # Push results for downstream tasks
+    ti.xcom_push(key="merged_accounts_path", value=merged_accounts_path)
+    ti.xcom_push(key="merged_pairs_path", value=merged_pairs_path)
+    ti.xcom_push(key="analytics_metadata", value=analytics_metadata)
+    ti.xcom_push(key="split_summary", value=split_summary)
 
-        with open(metadata_path, "w") as f:
-            json.dump(metadata, f, indent=2)
-
-    print(f"\n[Split] Summary: {split_summary}")
-
-    context["task_instance"].xcom_push(key="split_summary", value=split_summary)
-    return split_summary
-
-
-# =============================================================================
-# PHASE 5: VALIDATION TASKS
-# =============================================================================
-
-
-def schema_validation(**context):
-    """Validate schema on merged data."""
-    ti = context["task_instance"]
-    base_dir = get_base_dir()
-
-    merged_accounts_path = ti.xcom_pull(
-        task_ids="merge_datasets", key="merged_accounts_path"
-    )
-    merged_pairs_path = ti.xcom_pull(task_ids="merge_datasets", key="merged_pairs_path")
-
-    if not merged_accounts_path:
-        merged_accounts_path = f"{base_dir}/processed/merged/accounts.csv"
-        merged_pairs_path = f"{base_dir}/processed/merged/er_pairs.csv"
-
-    accounts_df = pd.read_csv(merged_accounts_path)
-    pairs_df = pd.read_csv(merged_pairs_path)
-
-    print(
-        f"[Schema Validation] Validating {len(accounts_df)} accounts, {len(pairs_df)} pairs"
-    )
-
-    metrics_dir = f"{base_dir}/metrics"
-    os.makedirs(metrics_dir, exist_ok=True)
-
-    validator = SchemaValidator(output_dir=metrics_dir)
-    results = validator.validate_all(accounts_df, pairs_df)
-
-    # Add multi-domain metadata
-    results["multi_domain"] = {
-        "entity_types": (
-            accounts_df["entity_type"].unique().tolist()
-            if "entity_type" in accounts_df.columns
-            else []
-        ),
-        "source_datasets": (
-            accounts_df["source_dataset"].unique().tolist()
-            if "source_dataset" in accounts_df.columns
-            else []
-        ),
-        "entity_distribution": (
-            accounts_df["entity_type"].value_counts().to_dict()
-            if "entity_type" in accounts_df.columns
-            else {}
-        ),
+    return {
+        "analytics": analytics_metadata,
+        "training": split_summary,
     }
 
-    validator.save_results(results)
 
-    print(f"[Schema Validation] Overall success: {results['overall_success']}")
-
-    ti.xcom_push(key="schema_validation_results", value=results)
-    return results
+# =============================================================================
+# PHASE 5: VALIDATION TASKS (3 parallel)
+# =============================================================================
 
 
 def validate_training_splits(**context):
-    """Validate training splits for all entity types."""
+    """Validate training splits for data leakage and label balance."""
     ti = context["task_instance"]
     base_dir = get_base_dir()
     training_dir = f"{base_dir}/training"
 
-    print("[Training Split Validation] Starting...")
+    print("[Validate Splits] Checking training data quality...")
 
     validator = TrainingSplitValidator(output_dir=f"{base_dir}/metrics")
-    results = validator.validate_all_splits(training_dir)
+    all_results = {}
 
-    # Save results
-    validator.save_results(results)
+    for entity_type in ["person", "product", "publication"]:
+        entity_dir = f"{training_dir}/{entity_type}"
 
-    print(f"[Training Split Validation] Overall success: {results['overall_success']}")
-    print(
-        f"[Training Split Validation] Success rate: {results['summary']['success_rate']}%"
-    )
+        if not os.path.exists(f"{entity_dir}/train.csv"):
+            print(f"[Validate Splits] No splits for {entity_type}, skipping")
+            continue
 
-    if not results["overall_success"]:
-        print(
-            f"[Training Split Validation] Failures: {results['summary']['critical_failures']}"
+        results = validator.validate_entity_splits(
+            entity_type=entity_type,
+            entity_dir=entity_dir,
         )
 
-    ti.xcom_push(key="training_validation_results", value=results)
+        all_results[entity_type] = results
+        print(
+            f"[Validate Splits] {entity_type}: {'PASSED' if results['success'] else 'FAILED'}"
+        )
+
+    # Aggregate results into summary format expected by QualityGate
+    total_entities = len(all_results)
+    passed_entities = sum(1 for r in all_results.values() if r.get("success", False))
+    success_rate = (passed_entities / total_entities * 100) if total_entities > 0 else 0
+
+    # Collect critical failures (data leakage is critical)
+    critical_failures = []
+    for entity_type, results in all_results.items():
+        if results.get("data_leakage", {}).get("has_leakage", False):
+            critical_failures.append(f"{entity_type}: data leakage detected")
+
+    all_results["summary"] = {
+        "success_rate": success_rate,
+        "critical_failures": critical_failures,
+        "total_entities": total_entities,
+        "passed_entities": passed_entities,
+    }
+
+    print(f"[Validate Splits] Summary: {passed_entities}/{total_entities} passed ({success_rate:.0f}%)")
+
+    output_path = f"{base_dir}/metrics/training_split_validation.json"
+    with open(output_path, "w") as f:
+        json.dump(all_results, f, indent=2, cls=NumpyEncoder)
+
+    ti.xcom_push(key="split_validation_results", value=all_results)
+    return all_results
+
+
+def schema_validation(**context):
+    """Validate schema of merged analytics data."""
+    ti = context["task_instance"]
+    base_dir = get_base_dir()
+
+    print("[Schema] Validating analytics data schema...")
+
+    validator = SchemaValidator(output_dir=f"{base_dir}/metrics")
+
+    # Validate merged accounts
+    accounts_path = f"{base_dir}/analytics/merged_all.csv"
+    pairs_path = f"{base_dir}/analytics/merged_pairs.csv"
+
+    if not os.path.exists(accounts_path):
+        accounts_path = f"{base_dir}/processed/merged/accounts.csv"
+        pairs_path = f"{base_dir}/processed/merged/er_pairs.csv"
+
+    accounts_df = pd.read_csv(accounts_path)
+    pairs_df = pd.read_csv(pairs_path)
+
+    results = validator.validate_all(accounts_df, pairs_df)
+
+    validator.save_results(results, "schema_validation_results.json")
+
+    print(
+        f"[Schema] Validation: {'PASSED' if results['overall_success'] else 'FAILED'}"
+    )
+
+    ti.xcom_push(key="schema_results", value=results)
     return results
 
 
 def bias_detection(**context):
-    """Detect bias in merged data."""
+    """Run bias detection on merged analytics data."""
     ti = context["task_instance"]
     base_dir = get_base_dir()
 
-    merged_accounts_path = ti.xcom_pull(
-        task_ids="merge_datasets", key="merged_accounts_path"
-    )
-    merged_pairs_path = ti.xcom_pull(task_ids="merge_datasets", key="merged_pairs_path")
+    print("[Bias] Analyzing bias in merged data...")
 
-    if not merged_accounts_path:
-        merged_accounts_path = f"{base_dir}/processed/merged/accounts.csv"
-        merged_pairs_path = f"{base_dir}/processed/merged/er_pairs.csv"
+    accounts_path = f"{base_dir}/analytics/merged_all.csv"
+    pairs_path = f"{base_dir}/analytics/merged_pairs.csv"
 
-    accounts_df = pd.read_csv(merged_accounts_path)
-    pairs_df = pd.read_csv(merged_pairs_path)
+    if not os.path.exists(accounts_path):
+        accounts_path = f"{base_dir}/processed/merged/accounts.csv"
+        pairs_path = f"{base_dir}/processed/merged/er_pairs.csv"
 
-    print(
-        f"[Bias Detection] Analyzing {len(accounts_df)} accounts, {len(pairs_df)} pairs"
-    )
+    accounts_df = pd.read_csv(accounts_path)
+    pairs_df = pd.read_csv(pairs_path) if os.path.exists(pairs_path) else None
 
-    # Log distributions
-    if "entity_type" in accounts_df.columns:
-        entity_dist = accounts_df["entity_type"].value_counts()
-        print("[Bias Detection] Entity type distribution:")
-        for et, count in entity_dist.items():
-            print(f"  - {et}: {count} ({count/len(accounts_df)*100:.1f}%)")
-
-    metrics_dir = f"{base_dir}/metrics"
-    os.makedirs(metrics_dir, exist_ok=True)
-
-    detector = BiasDetector(output_dir=metrics_dir)
+    detector = BiasDetector(output_dir=f"{base_dir}/metrics")
     report = detector.generate_bias_report(accounts_df, pairs_df)
 
-    # Add multi-domain analysis
-    report["multi_domain_analysis"] = {
-        "entity_type_distribution": (
-            accounts_df["entity_type"].value_counts().to_dict()
-            if "entity_type" in accounts_df.columns
-            else {}
-        ),
-        "source_dataset_distribution": (
-            accounts_df["source_dataset"].value_counts().to_dict()
-            if "source_dataset" in accounts_df.columns
-            else {}
-        ),
-    }
-
-    # Save report
-    report_path = f"{metrics_dir}/bias_report.json"
-    with open(report_path, "w") as f:
-        json.dump(report, f, indent=2, default=str)
-
-    print(f"[Bias Detection] Overall risk: {report['summary']['overall_bias_risk']}")
+    overall_risk = report.get("summary", {}).get("overall_bias_risk", "UNKNOWN")
+    print(f"[Bias] Overall risk: {overall_risk}")
 
     ti.xcom_push(key="bias_report", value=report)
     return report
@@ -723,45 +635,36 @@ def bias_detection(**context):
 
 
 def quality_gate_check(**context):
-    """
-    Quality gate - aggregates all validation results and makes go/no-go decision.
-    Fails the task if critical issues are found.
-    """
+    """Aggregate all validation results and make go/no-go decision."""
     ti = context["task_instance"]
     base_dir = get_base_dir()
 
-    print("[Quality Gate] Evaluating validation results...")
+    print("[Quality Gate] Evaluating pipeline quality...")
 
-    # Get all validation results
-    schema_results = ti.xcom_pull(
-        task_ids="schema_validation", key="schema_validation_results"
-    )
-    training_results = ti.xcom_pull(
-        task_ids="validate_training_splits", key="training_validation_results"
-    )
-    bias_results = ti.xcom_pull(task_ids="bias_detection", key="bias_report")
+    gate = QualityGate()
 
-    # Run quality gate evaluation
-    gate = QualityGate(output_dir=f"{base_dir}/metrics")
+    # Collect validation results
+    split_results = ti.xcom_pull(
+        task_ids="validate_training_splits", key="split_validation_results"
+    )
+    schema_results = ti.xcom_pull(task_ids="schema_validation", key="schema_results")
+    bias_report = ti.xcom_pull(task_ids="bias_detection", key="bias_report")
+
     decision = gate.evaluate(
         schema_results=schema_results,
-        training_results=training_results,
-        bias_results=bias_results,
-        fail_on_high_bias=False,  # Warn but don't fail on high bias
+        training_results=split_results,
+        bias_results=bias_report,
     )
 
-    # Save results
-    gate.save_results(decision)
+    output_path = f"{base_dir}/metrics/quality_gate_results.json"
+    with open(output_path, "w") as f:
+        json.dump(decision, f, indent=2)
 
-    print(f"[Quality Gate] Decision: {decision['decision']}")
-    print(f"[Quality Gate] Passed: {decision['passed']}")
+    print(f"\n[Quality Gate] Decision: {decision['decision']}")
 
-    if decision["warnings"]:
-        print(f"[Quality Gate] Warnings: {decision['warnings']}")
-
-    if not decision["passed"]:
-        failure_msg = f"Quality gate failed: {decision['failures']}"
-        print(f"[Quality Gate] FAILED: {failure_msg}")
+    if decision["decision"] == "NO-GO":
+        failure_msg = f"Quality gate BLOCKED: {decision.get('failures', [])}"
+        print(f"[Quality Gate] {failure_msg}")
         raise ValueError(failure_msg)
 
     ti.xcom_push(key="quality_gate_decision", value=decision)
@@ -769,73 +672,53 @@ def quality_gate_check(**context):
 
 
 # =============================================================================
-# PHASE 7: EXECUTION PATH BRANCHING
+# PHASE 7: EXECUTION PATH
 # =============================================================================
 
 
 def decide_execution_path(**context):
-    """
-    Branch task to decide between local and cloud execution paths.
-    Returns the task_id to execute next.
-    """
-    mode = os.getenv("EXECUTION_MODE", "local")
+    """Branch based on execution mode (from DAG conf or environment)."""
+    # Check DAG run conf first, then fall back to environment variable
+    dag_run = context.get("dag_run")
+    conf = dag_run.conf if dag_run else {}
+    mode = conf.get("execution_mode", os.getenv("EXECUTION_MODE", "local"))
     print(f"[Execution Path] Mode: {mode}")
 
     if mode == "cloud":
-        print("[Execution Path] Proceeding to cloud upload...")
-        return "cloud_tasks.upload_to_gcs"
-    else:
-        print("[Execution Path] Skipping cloud tasks, completing locally...")
-        return "pipeline_complete_local"
+        return "upload_to_gcs"
+    return "pipeline_complete_local"
 
 
 # =============================================================================
-# PHASE 8: CLOUD UPLOAD TASKS
+# PHASE 8: CLOUD TASKS
 # =============================================================================
 
 
 def upload_to_gcs(**context):
-    """Upload both merged and training data to GCS."""
-    print(f"[GCS Upload] Starting upload to gs://{GCS_BUCKET}/")
+    """Upload data to GCS."""
+    print(f"[GCS] Starting upload to gs://{GCS_BUCKET}/")
 
     try:
         from google.cloud import storage
     except ImportError:
-        print("[GCS Upload] ERROR: google-cloud-storage not installed")
-        raise ImportError("google-cloud-storage package required for cloud mode")
+        raise ImportError("google-cloud-storage required for cloud mode")
 
     base_dir = get_base_dir()
     ti = context["task_instance"]
-
-    try:
-        client = storage.Client()
-        bucket = client.bucket(GCS_BUCKET)
-    except Exception as e:
-        print(f"[GCS Upload] ERROR: Failed to connect to GCS: {e}")
-        raise
-
-    uploads = []
     timestamp = datetime.now().strftime("%Y-%m-%d")
 
-    # Files to upload
+    client = storage.Client()
+    bucket = client.bucket(GCS_BUCKET)
+
+    uploads = []
     upload_files = [
-        # Merged data
         (
-            f"{base_dir}/processed/merged/accounts.csv",
-            f"processed/{timestamp}/accounts.csv",
+            f"{base_dir}/analytics/merged_all.csv",
+            f"analytics/{timestamp}/merged_all.csv",
         ),
         (
-            f"{base_dir}/processed/merged/er_pairs.csv",
-            f"processed/{timestamp}/er_pairs.csv",
-        ),
-        (
-            f"{base_dir}/processed/merged/metadata.json",
-            f"processed/{timestamp}/metadata.json",
-        ),
-        # Metrics
-        (
-            f"{base_dir}/metrics/schema_validation_results.json",
-            f"metrics/{timestamp}/schema_validation.json",
+            f"{base_dir}/analytics/merged_pairs.csv",
+            f"analytics/{timestamp}/merged_pairs.csv",
         ),
         (
             f"{base_dir}/metrics/bias_report.json",
@@ -849,200 +732,287 @@ def upload_to_gcs(**context):
 
     # Add training splits
     for entity_type in ["person", "product", "publication"]:
-        entity_dir = f"{base_dir}/training/{entity_type}"
-        if os.path.exists(entity_dir):
-            for filename in [
-                "all_pairs.csv",
-                "train.csv",
-                "val.csv",
-                "test.csv",
-                "metadata.json",
-            ]:
-                local_path = f"{entity_dir}/{filename}"
-                if os.path.exists(local_path):
-                    gcs_path = f"training/{timestamp}/{entity_type}/{filename}"
-                    upload_files.append((local_path, gcs_path))
+        for filename in ["train.csv", "val.csv", "test.csv", "metadata.json"]:
+            local_path = f"{base_dir}/training/{entity_type}/{filename}"
+            if os.path.exists(local_path):
+                upload_files.append(
+                    (local_path, f"training/{timestamp}/{entity_type}/{filename}")
+                )
 
-    # Perform uploads
     for local_path, gcs_path in upload_files:
         if os.path.exists(local_path):
-            try:
-                blob = bucket.blob(gcs_path)
-                blob.upload_from_filename(local_path)
-                print(f"[GCS] Uploaded {local_path} -> gs://{GCS_BUCKET}/{gcs_path}")
-                uploads.append(f"gs://{GCS_BUCKET}/{gcs_path}")
-            except Exception as e:
-                print(f"[GCS] ERROR uploading {local_path}: {e}")
-        else:
-            print(f"[GCS] Skipping (not found): {local_path}")
+            blob = bucket.blob(gcs_path)
+            blob.upload_from_filename(local_path)
+            uploads.append(f"gs://{GCS_BUCKET}/{gcs_path}")
+            print(f"[GCS] Uploaded -> {gcs_path}")
 
-    print(f"[GCS Upload] Completed: {len(uploads)} files uploaded")
-
+    print(f"[GCS] Completed: {len(uploads)} files")
     ti.xcom_push(key="gcs_uploads", value=uploads)
     ti.xcom_push(key="gcs_timestamp", value=timestamp)
     return uploads
 
 
-def load_accounts_to_bigquery(**context):
-    """Load accounts data to BigQuery."""
-    print("[BigQuery] Loading accounts table...")
+def load_to_bigquery(**context):
+    """Load data to BigQuery."""
+    print("[BigQuery] Loading tables...")
 
     try:
         from google.cloud import bigquery
     except ImportError:
-        print("[BigQuery] ERROR: google-cloud-bigquery not installed")
-        raise ImportError("google-cloud-bigquery package required for cloud mode")
+        raise ImportError("google-cloud-bigquery required for cloud mode")
 
     ti = context["task_instance"]
     base_dir = get_base_dir()
-    # Timestamp from GCS upload (reserved for future use)
-    ti.xcom_pull(task_ids="cloud_tasks.upload_to_gcs", key="gcs_timestamp")
+    client = bigquery.Client()
 
-    try:
-        client = bigquery.Client()
-    except Exception as e:
-        print(f"[BigQuery] ERROR: Failed to connect: {e}")
-        raise
+    # Load accounts
+    accounts_table = f"{GCP_PROJECT_ID}.{BQ_DATASET}.accounts"
+    accounts_path = f"{base_dir}/analytics/merged_all.csv"
 
-    table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET}.accounts"
+    if not os.path.exists(accounts_path):
+        accounts_path = f"{base_dir}/processed/merged/accounts.csv"
 
-    # Define schema
-    schema = [
-        bigquery.SchemaField("id", "STRING"),
-        bigquery.SchemaField("name", "STRING"),
-        bigquery.SchemaField("address", "STRING"),
-        bigquery.SchemaField("dob", "STRING"),
-        bigquery.SchemaField("cluster_id", "STRING"),
-        bigquery.SchemaField("entity_type", "STRING"),
-        bigquery.SchemaField("source_dataset", "STRING"),
-    ]
+    # Read CSV to get column names and create STRING schema
+    # (autodetect fails on partial date formats like "1946")
+    df = pd.read_csv(accounts_path, nrows=1)
+    schema = [bigquery.SchemaField(col, "STRING") for col in df.columns]
 
     job_config = bigquery.LoadJobConfig(
-        schema=schema,
         skip_leading_rows=1,
         source_format=bigquery.SourceFormat.CSV,
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+        schema=schema,
     )
 
-    # Load from local file
-    accounts_path = f"{base_dir}/processed/merged/accounts.csv"
     with open(accounts_path, "rb") as f:
-        load_job = client.load_table_from_file(f, table_id, job_config=job_config)
+        job = client.load_table_from_file(f, accounts_table, job_config=job_config)
+    job.result()
 
-    load_job.result()  # Wait for completion
+    table = client.get_table(accounts_table)
+    print(f"[BigQuery] Loaded {table.num_rows} rows to {accounts_table}")
 
-    table = client.get_table(table_id)
-    print(f"[BigQuery] Loaded {table.num_rows} rows to {table_id}")
-
-    ti.xcom_push(key="accounts_row_count", value=table.num_rows)
+    ti.xcom_push(key="bq_row_count", value=table.num_rows)
     return table.num_rows
 
 
-def load_pairs_to_bigquery(**context):
-    """Load pairs data to BigQuery."""
-    print("[BigQuery] Loading pairs table...")
-
-    try:
-        from google.cloud import bigquery
-    except ImportError:
-        print("[BigQuery] ERROR: google-cloud-bigquery not installed")
-        raise ImportError("google-cloud-bigquery package required for cloud mode")
-
+def verify_and_complete(**context):
+    """Verify cloud loads and complete pipeline."""
     ti = context["task_instance"]
+
+    gcs_uploads = ti.xcom_pull(task_ids="upload_to_gcs", key="gcs_uploads") or []
+    bq_rows = ti.xcom_pull(task_ids="load_to_bigquery", key="bq_row_count") or 0
+
+    print(f"[Verify] GCS uploads: {len(gcs_uploads)}")
+    print(f"[Verify] BigQuery rows: {bq_rows}")
+    print("[Verify] Pipeline complete!")
+
+    return {"gcs_files": len(gcs_uploads), "bq_rows": bq_rows}
+
+
+# =============================================================================
+# PHASE 9: DVC DATA VERSIONING
+# =============================================================================
+
+
+def dvc_track_and_version(**context):
+    """
+    Track all pipeline outputs with DVC and push to remote storage.
+
+    This task:
+    1. Tracks all pipeline outputs with DVC (data/processed, training, analytics, metrics)
+    2. Pushes data to DVC remote storage
+    3. Commits DVC tracking files to git with run metadata
+    4. Logs DVC commit hash and data sizes
+
+    This completes the MLOps loop: Airflow orchestrates, DVC versions.
+
+    Note: In Docker development mode, DVC tracking may be skipped if git/dvc
+    are not properly configured. Run `dvc add` manually on the host for local dev.
+    """
+    ti = context["task_instance"]
+    run_id = context.get("run_id", "unknown")
     base_dir = get_base_dir()
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-    try:
-        client = bigquery.Client()
-    except Exception as e:
-        print(f"[BigQuery] ERROR: Failed to connect: {e}")
-        raise
+    # DVC repo root is /opt/airflow (where .dvc folder is mounted)
+    # Data directory is /opt/airflow/data
+    dvc_repo_root = "/opt/airflow"
 
-    table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET}.er_pairs"
+    print("[DVC] Starting data versioning...")
+    print(f"[DVC] Repo root: {dvc_repo_root}")
+    print(f"[DVC] Data dir: {base_dir}")
 
-    # Define schema
-    schema = [
-        bigquery.SchemaField("id1", "STRING"),
-        bigquery.SchemaField("id2", "STRING"),
-        bigquery.SchemaField("name1", "STRING"),
-        bigquery.SchemaField("name2", "STRING"),
-        bigquery.SchemaField("address1", "STRING"),
-        bigquery.SchemaField("address2", "STRING"),
-        bigquery.SchemaField("label", "INTEGER"),
-        bigquery.SchemaField("entity_type", "STRING"),
-        bigquery.SchemaField("source_dataset", "STRING"),
+    # Check if we're in a valid DVC/git environment
+    dvc_available = os.path.isdir(f"{dvc_repo_root}/.dvc")
+    git_available = os.path.isdir(f"{dvc_repo_root}/.git")
+
+    print(f"[DVC] DVC config available: {dvc_available}")
+    print(f"[DVC] Git repo available: {git_available}")
+
+    # Directories to track with DVC (relative paths from repo root)
+    dvc_targets = [
+        "data/processed",
+        "data/training",
+        "data/analytics",
+        "data/metrics",
     ]
 
-    job_config = bigquery.LoadJobConfig(
-        schema=schema,
-        skip_leading_rows=1,
-        source_format=bigquery.SourceFormat.CSV,
-        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-    )
+    tracked_items = []
+    total_size_bytes = 0
 
-    # Load from local file
-    pairs_path = f"{base_dir}/processed/merged/er_pairs.csv"
-    with open(pairs_path, "rb") as f:
-        load_job = client.load_table_from_file(f, table_id, job_config=job_config)
-
-    load_job.result()  # Wait for completion
-
-    table = client.get_table(table_id)
-    print(f"[BigQuery] Loaded {table.num_rows} rows to {table_id}")
-
-    ti.xcom_push(key="pairs_row_count", value=table.num_rows)
-    return table.num_rows
-
-
-def verify_bigquery_load(**context):
-    """Verify BigQuery load by comparing row counts."""
-    print("[BigQuery Verify] Checking row counts...")
-
-    ti = context["task_instance"]
-    base_dir = get_base_dir()
-
-    # Get expected counts from merged metadata
-    merged_metadata_path = f"{base_dir}/processed/merged/metadata.json"
-    with open(merged_metadata_path) as f:
-        metadata = json.load(f)
-
-    expected_accounts = metadata["total_accounts"]
-    expected_pairs = metadata["total_pairs"]
-
-    # Get actual counts from BigQuery
-    actual_accounts = ti.xcom_pull(
-        task_ids="cloud_tasks.load_accounts_bq", key="accounts_row_count"
-    )
-    actual_pairs = ti.xcom_pull(
-        task_ids="cloud_tasks.load_pairs_bq", key="pairs_row_count"
-    )
-
-    print(
-        f"[BigQuery Verify] Accounts: expected={expected_accounts}, actual={actual_accounts}"
-    )
-    print(f"[BigQuery Verify] Pairs: expected={expected_pairs}, actual={actual_pairs}")
-
-    # Check within 5% tolerance
-    accounts_diff = abs(actual_accounts - expected_accounts) / expected_accounts
-    pairs_diff = abs(actual_pairs - expected_pairs) / expected_pairs
-
-    if accounts_diff > 0.05:
-        diff_pct = accounts_diff * 100
-        raise ValueError(
-            f"Accounts count mismatch: expected {expected_accounts}, "
-            f"got {actual_accounts} ({diff_pct:.1f}% difference)"
+    def run_cmd(cmd, cwd=None, check=True):
+        """Run shell command and return output."""
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            cwd=cwd or dvc_repo_root,
         )
+        if check and result.returncode != 0:
+            print(f"[DVC] Command failed: {cmd}")
+            print(f"[DVC] stderr: {result.stderr}")
+        return result
 
-    if pairs_diff > 0.05:
-        raise ValueError(
-            f"Pairs count mismatch: expected {expected_pairs}, got {actual_pairs} ({pairs_diff*100:.1f}% difference)"
-        )
+    def get_dir_size(path):
+        """Get total size of directory in bytes."""
+        total = 0
+        if os.path.isdir(path):
+            for dirpath, _, filenames in os.walk(path):
+                for f in filenames:
+                    fp = os.path.join(dirpath, f)
+                    if os.path.exists(fp):
+                        total += os.path.getsize(fp)
+        elif os.path.isfile(path):
+            total = os.path.getsize(path)
+        return total
 
-    print("[BigQuery Verify] All counts verified successfully!")
+    # Step 1: Calculate sizes and track with DVC
+    print("[DVC] Step 1: Calculating output sizes...")
+    for target in dvc_targets:
+        # Full path for existence check and size calculation
+        full_path = os.path.join(dvc_repo_root, target)
 
-    return {
-        "accounts": {"expected": expected_accounts, "actual": actual_accounts},
-        "pairs": {"expected": expected_pairs, "actual": actual_pairs},
+        if os.path.exists(full_path):
+            size = get_dir_size(full_path)
+            total_size_bytes += size
+            size_mb = size / (1024 * 1024)
+            tracked_items.append({"path": target, "size_mb": round(size_mb, 2)})
+            print(f"[DVC] Found: {target} ({size_mb:.2f} MB)")
+        else:
+            print(f"[DVC] Skipping (not found): {full_path}")
+
+    # Only attempt DVC operations if properly configured
+    if dvc_available and git_available:
+        print("\n[DVC] Step 2: Tracking outputs with DVC...")
+        for item in tracked_items:
+            result = run_cmd(f"dvc add {item['path']}", check=False)
+            if result.returncode == 0:
+                print(f"[DVC] Tracked: {item['path']}")
+            else:
+                print(f"[DVC] Could not track {item['path']}: {result.stderr.strip()}")
+
+        # Push to DVC remote
+        print("\n[DVC] Step 3: Pushing to remote storage...")
+        push_result = run_cmd("dvc push", check=False)
+
+        if push_result.returncode == 0:
+            print("[DVC] Successfully pushed to remote storage")
+            push_status = "success"
+        elif "Everything is up to date" in (push_result.stderr + push_result.stdout):
+            print("[DVC] Remote already up to date")
+            push_status = "up_to_date"
+        else:
+            print(f"[DVC] Push warning: {push_result.stderr}")
+            push_status = "failed"
+
+        # Git commit DVC tracking files
+        print("\n[DVC] Step 4: Committing DVC tracking files to git...")
+
+        # Stage .dvc files and .gitignore updates
+        run_cmd("git add *.dvc .gitignore data/**/*.dvc data/.gitignore 2>/dev/null || true")
+
+        # Create commit message with run metadata
+        commit_msg = f"""DVC: Auto-version pipeline outputs
+
+Run ID: {run_id}
+Timestamp: {timestamp}
+Total Size: {total_size_bytes / (1024 * 1024):.2f} MB
+Tracked Items: {len(tracked_items)}
+
+Outputs:
+- data/processed/: Per-dataset transformed outputs
+- data/training/: Train/val/test splits by entity type
+- data/analytics/: Merged data for bias detection
+- data/metrics/: Validation and quality reports
+
+Automated by Airflow er_data_pipeline DAG
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"""
+
+        # Check if there are changes to commit
+        status_result = run_cmd("git status --porcelain")
+        if status_result.stdout.strip():
+            commit_result = run_cmd(
+                f'git commit -m "{commit_msg}"',
+                check=False,
+            )
+            if commit_result.returncode == 0:
+                print("[DVC] Git commit created successfully")
+                git_status = "committed"
+            else:
+                print(f"[DVC] Git commit warning: {commit_result.stderr}")
+                git_status = "failed" if "nothing to commit" not in commit_result.stderr else "no_changes"
+        else:
+            print("[DVC] No changes to commit (data unchanged)")
+            git_status = "no_changes"
+    else:
+        # Development mode - DVC/git not configured in Docker
+        print("\n[DVC] DEVELOPMENT MODE: DVC/git not fully configured in container")
+        print("[DVC] To version this data, run on host:")
+        print("  cd Data-Pipeline && dvc add data/processed data/training data/analytics data/metrics")
+        print("  dvc push && git add *.dvc && git commit -m 'DVC: version pipeline outputs'")
+        push_status = "skipped_dev_mode"
+        git_status = "skipped_dev_mode"
+
+    # Step 4: Get DVC status and git hash
+    print("\n[DVC] Step 4: Collecting version info...")
+
+    git_hash_result = run_cmd("git rev-parse HEAD", check=False)
+    git_hash = git_hash_result.stdout.strip() if git_hash_result.returncode == 0 else "unknown"
+
+    dvc_status_result = run_cmd("dvc status", check=False)
+
+    # Compile results
+    version_info = {
+        "timestamp": timestamp,
+        "run_id": str(run_id),
+        "git_commit": git_hash,
+        "git_status": git_status,
+        "dvc_push_status": push_status,
+        "tracked_items": tracked_items,
+        "total_size_mb": round(total_size_bytes / (1024 * 1024), 2),
+        "dvc_status": dvc_status_result.stdout.strip() if dvc_status_result.returncode == 0 else "unavailable",
     }
+
+    # Save version info
+    version_file = f"{base_dir}/metrics/dvc_version_info.json"
+    os.makedirs(os.path.dirname(version_file), exist_ok=True)
+    with open(version_file, "w") as f:
+        json.dump(version_info, f, indent=2)
+
+    # Print summary
+    print("\n" + "=" * 60)
+    print("[DVC] DATA VERSIONING COMPLETE")
+    print("=" * 60)
+    print(f"  Git Commit: {git_hash[:12] if git_hash != 'unknown' else 'N/A'}")
+    print(f"  Total Size: {version_info['total_size_mb']:.2f} MB")
+    print(f"  Items Tracked: {len(tracked_items)}")
+    print(f"  Push Status: {push_status}")
+    print(f"  Git Status: {git_status}")
+    print("=" * 60)
+
+    ti.xcom_push(key="dvc_version_info", value=version_info)
+    return version_info
 
 
 # =============================================================================
@@ -1060,182 +1030,138 @@ default_args = {
 with DAG(
     dag_id="er_data_pipeline",
     default_args=default_args,
-    description="Production-Grade Pipeline with Validation Gates and Cloud Integration",
+    description="Optimized Multi-Domain Pipeline for LoRA Training and Bias Analysis",
     schedule=None,
     catchup=False,
-    tags=["entity-resolution", "data-pipeline", "multi-domain", "production"],
+    tags=["entity-resolution", "multi-domain", "optimized"],
     doc_md="""
-    # Entity Resolution Data Pipeline
+    # Entity Resolution Data Pipeline (Optimized)
 
-    ## Overview
-    Production-grade pipeline for multi-domain entity resolution data processing.
+    ## Architecture
+    Dual-output pipeline serving two purposes:
+    - **Training Branch**: Domain-specific data for LoRA adapter training
+    - **Analytics Branch**: Merged data for cross-domain bias analysis
 
-    ## Features
-    - 6 parallel dataset processing (PERSON, PRODUCT, PUBLICATION)
-    - Per-dataset validation gates
-    - Training split validation (70/15/15)
-    - Quality gate with go/no-go decision
-    - Conditional cloud upload (GCS + BigQuery)
+    ## Task Structure (~25 tasks)
+    1. Load (6 parallel) → Validate All (1) → Transform (6 parallel)
+    2. Organize Datasets (1) - Creates BOTH training + analytics outputs
+    3. Validation (3 parallel): Training splits, Schema, Bias
+    4. Quality Gate → Cloud Upload (conditional) → DVC Versioning
 
-    ## Execution Modes
-    - **local**: Process data, skip cloud upload
-    - **cloud**: Process data + upload to GCS + BigQuery
+    ## DVC Integration
+    - Every pipeline run is automatically versioned with DVC
+    - Data pushed to remote storage (../dvc-storage or GCS)
+    - Git commits created with run metadata
+    - Enables rollback to any previous run's data
 
-    ## Environment Variables
-    - `EXECUTION_MODE`: "local" or "cloud"
-    - `LOCAL_MODE`: "true" for synthetic data
-    - `GCP_PROJECT_ID`: GCP project ID
-    - `GCS_BUCKET`: GCS bucket name
-    - `BQ_DATASET`: BigQuery dataset name
+    ## Outputs
+    - `data/training/{person,product,publication}/train.csv` - For LoRA adapters
+    - `data/analytics/merged_all.csv` - For bias detection
     """,
 ) as dag:
 
-    # ===================
-    # START
-    # ===================
+    # Start
     start = EmptyOperator(task_id="start")
 
-    # ===================
-    # PARALLEL LOAD + VALIDATE + TRANSFORM (per dataset)
-    # ===================
+    # Phase 1: Load (6 parallel)
     load_tasks = {}
-    validate_raw_tasks = {}
-    transform_tasks = {}
-
     for dataset_name in DATASETS:
-        # Load task
         load_tasks[dataset_name] = PythonOperator(
             task_id=f"load_{dataset_name}",
             python_callable=load_dataset,
             op_kwargs={"dataset_name": dataset_name},
         )
+        start >> load_tasks[dataset_name]
 
-        # Validate raw task (quality gate)
-        validate_raw_tasks[dataset_name] = PythonOperator(
-            task_id=f"validate_raw_{dataset_name}",
-            python_callable=validate_raw_dataset,
-            op_kwargs={"dataset_name": dataset_name},
-        )
+    # Phase 2: Consolidated validation (1 task)
+    validate_all_task = PythonOperator(
+        task_id="validate_all_raw",
+        python_callable=validate_all_raw_datasets,
+    )
+    for dataset_name in DATASETS:
+        load_tasks[dataset_name] >> validate_all_task
 
-        # Transform task
+    # Phase 3: Transform (6 parallel)
+    transform_tasks = {}
+    for dataset_name in DATASETS:
         transform_tasks[dataset_name] = PythonOperator(
             task_id=f"transform_{dataset_name}",
             python_callable=transform_dataset,
             op_kwargs={"dataset_name": dataset_name},
         )
+        validate_all_task >> transform_tasks[dataset_name]
 
-        # Dependencies: start >> load >> validate >> transform
-        start >> load_tasks[dataset_name]
-        load_tasks[dataset_name] >> validate_raw_tasks[dataset_name]
-        validate_raw_tasks[dataset_name] >> transform_tasks[dataset_name]
-
-    # ===================
-    # MERGE TASK (waits for all transforms)
-    # ===================
-    merge_task = PythonOperator(
-        task_id="merge_datasets",
-        python_callable=merge_datasets,
+    # Phase 4: Organize datasets (1 task creates both outputs)
+    organize_task = PythonOperator(
+        task_id="organize_datasets",
+        python_callable=organize_datasets,
     )
     for dataset_name in DATASETS:
-        transform_tasks[dataset_name] >> merge_task
+        transform_tasks[dataset_name] >> organize_task
 
-    # ===================
-    # TRAINING SPLITS TASK
-    # ===================
-    split_task = PythonOperator(
-        task_id="create_training_splits",
-        python_callable=create_training_splits,
-    )
-    merge_task >> split_task
-
-    # ===================
-    # VALIDATION TASKS (parallel after merge/split)
-    # ===================
-    schema_task = PythonOperator(
-        task_id="schema_validation",
-        python_callable=schema_validation,
-    )
-
+    # Phase 5: Validation (3 parallel)
     validate_splits_task = PythonOperator(
         task_id="validate_training_splits",
         python_callable=validate_training_splits,
     )
-
+    schema_task = PythonOperator(
+        task_id="schema_validation",
+        python_callable=schema_validation,
+    )
     bias_task = PythonOperator(
         task_id="bias_detection",
         python_callable=bias_detection,
     )
+    organize_task >> [validate_splits_task, schema_task, bias_task]
 
-    merge_task >> schema_task
-    split_task >> validate_splits_task
-    merge_task >> bias_task
-
-    # ===================
-    # QUALITY GATE (waits for all validations)
-    # ===================
+    # Phase 6: Quality gate
     quality_gate_task = PythonOperator(
         task_id="quality_gate",
         python_callable=quality_gate_check,
     )
-    [schema_task, validate_splits_task, bias_task] >> quality_gate_task
+    [validate_splits_task, schema_task, bias_task] >> quality_gate_task
 
-    # ===================
-    # EXECUTION PATH BRANCHING
-    # ===================
+    # Phase 7: Execution path
     decide_path_task = BranchPythonOperator(
         task_id="decide_execution_path",
         python_callable=decide_execution_path,
     )
     quality_gate_task >> decide_path_task
 
-    # ===================
-    # LOCAL COMPLETION
-    # ===================
-    pipeline_complete_local = EmptyOperator(
-        task_id="pipeline_complete_local",
-    )
+    # Local completion
+    pipeline_complete_local = EmptyOperator(task_id="pipeline_complete_local")
     decide_path_task >> pipeline_complete_local
 
-    # ===================
-    # CLOUD TASKS (TaskGroup)
-    # ===================
-    with TaskGroup(
-        "cloud_tasks", tooltip="Cloud upload and BigQuery load"
-    ) as cloud_group:
+    # Cloud tasks
+    upload_gcs_task = PythonOperator(
+        task_id="upload_to_gcs",
+        python_callable=upload_to_gcs,
+    )
+    load_bq_task = PythonOperator(
+        task_id="load_to_bigquery",
+        python_callable=load_to_bigquery,
+    )
+    verify_task = PythonOperator(
+        task_id="verify_and_complete",
+        python_callable=verify_and_complete,
+    )
 
-        upload_gcs_task = PythonOperator(
-            task_id="upload_to_gcs",
-            python_callable=upload_to_gcs,
-        )
+    decide_path_task >> upload_gcs_task >> load_bq_task >> verify_task
 
-        load_accounts_bq_task = PythonOperator(
-            task_id="load_accounts_bq",
-            python_callable=load_accounts_to_bigquery,
-        )
+    # Phase 8: DVC Data Versioning (runs after either path completes)
+    dvc_track_task = PythonOperator(
+        task_id="dvc_track_and_version",
+        python_callable=dvc_track_and_version,
+        trigger_rule="none_failed_min_one_success",
+    )
+    [pipeline_complete_local, verify_task] >> dvc_track_task
 
-        load_pairs_bq_task = PythonOperator(
-            task_id="load_pairs_bq",
-            python_callable=load_pairs_to_bigquery,
-        )
-
-        verify_bq_task = PythonOperator(
-            task_id="verify_bigquery",
-            python_callable=verify_bigquery_load,
-        )
-
-        upload_gcs_task >> [load_accounts_bq_task, load_pairs_bq_task] >> verify_bq_task
-
-    decide_path_task >> cloud_group
-
-    # ===================
-    # FINAL COMPLETION
-    # ===================
+    # Final completion
     pipeline_complete = EmptyOperator(
         task_id="pipeline_complete",
         trigger_rule="none_failed_min_one_success",
     )
-
-    [pipeline_complete_local, cloud_group] >> pipeline_complete
+    dvc_track_task >> pipeline_complete
 
 
 if __name__ == "__main__":

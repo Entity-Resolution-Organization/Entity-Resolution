@@ -14,15 +14,16 @@ A production-grade, multi-domain data pipeline for entity resolution using Apach
 6. [Pipeline Components](#pipeline-components)
 7. [Configuration](#configuration)
 8. [Running the Pipeline](#running-the-pipeline)
-9. [Data Outputs](#data-outputs)
-10. [Validation & Quality](#validation--quality)
-11. [Testing](#testing)
-12. [Data Versioning (DVC)](#data-versioning-dvc)
-13. [Troubleshooting](#troubleshooting)
-14. [Alerting & Monitoring](#alerting--monitoring)
-15. [Pipeline Optimization](#pipeline-optimization)
-16. [Development Guide](#development-guide)
-17. [Team & Acknowledgments](#team--acknowledgments)
+9. [Cloud Integration (GCS + BigQuery)](#cloud-integration-gcs--bigquery)
+10. [Data Outputs](#data-outputs)
+11. [Validation & Quality](#validation--quality)
+12. [Testing](#testing)
+13. [Data Versioning (DVC)](#data-versioning-dvc)
+14. [Troubleshooting](#troubleshooting)
+15. [Alerting & Monitoring](#alerting--monitoring)
+16. [Pipeline Optimization](#pipeline-optimization)
+17. [Development Guide](#development-guide)
+18. [Team & Acknowledgments](#team--acknowledgments)
 
 ---
 
@@ -353,9 +354,9 @@ datasets:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LOCAL_MODE` | `true` | Skip GCS/BigQuery in local mode |
-| `GCP_PROJECT_ID` | `entity-resolution-487121` | GCP project |
-| `GCS_BUCKET` | `entity-resolution-bucket-1` | Storage bucket |
-| `BQ_DATASET` | `entity_resolution_bq` | BigQuery dataset |
+| `GCP_PROJECT_ID` | `your-gcp-project-id` | GCP project |
+| `GCS_BUCKET` | `your-gcs-bucket` | Storage bucket |
+| `BQ_DATASET` | `your-bq-dataset` | BigQuery dataset |
 
 ### Switching to Production Mode
 
@@ -411,6 +412,244 @@ docker exec data-pipeline-airflow-scheduler-1 ls -la /opt/airflow/data/processed
 # Locally (mounted volume)
 ls -la data/processed/
 ```
+
+---
+
+## Cloud Integration (GCS + BigQuery)
+
+This section covers how to run the pipeline with Google Cloud Platform integration, uploading data to Cloud Storage and BigQuery.
+
+### Prerequisites for Cloud Mode
+
+1. **Google Cloud Project** with billing enabled
+2. **Service Account** with the following roles:
+   - `Storage Admin` (for GCS bucket operations)
+   - `BigQuery Data Editor` (for loading data)
+   - `BigQuery Job User` (for running load jobs)
+3. **GCS Bucket** created in your project
+4. **BigQuery Dataset** created in your project
+
+### Step 1: Create GCP Resources
+
+```bash
+# Set your project ID
+export PROJECT_ID="your-project-id"
+
+# Create GCS bucket
+gcloud storage buckets create gs://${PROJECT_ID}-entity-resolution \
+  --project=${PROJECT_ID} \
+  --location=us-central1
+
+# Create BigQuery dataset
+bq mk --dataset \
+  --project_id=${PROJECT_ID} \
+  --location=US \
+  ${PROJECT_ID}:your-bq-dataset
+```
+
+### Step 2: Create Service Account and Download Key
+
+```bash
+# Create service account
+gcloud iam service-accounts create entity-resolution-sa \
+  --display-name="Entity Resolution Pipeline" \
+  --project=${PROJECT_ID}
+
+# Grant permissions
+gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+  --member="serviceAccount:entity-resolution-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/storage.admin"
+
+gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+  --member="serviceAccount:entity-resolution-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/bigquery.dataEditor"
+
+gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+  --member="serviceAccount:entity-resolution-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/bigquery.jobUser"
+
+# Download key file
+gcloud iam service-accounts keys create secrets/gcp-sa-key.json \
+  --iam-account=entity-resolution-sa@${PROJECT_ID}.iam.gserviceaccount.com
+```
+
+### Step 3: Configure Environment Variables
+
+Update the `.env` file with your GCP settings:
+
+```bash
+# .env file
+# =============================================================================
+# Airflow Docker Environment Variables
+# =============================================================================
+
+# Airflow UID (run: echo $(id -u) to get your user ID)
+AIRFLOW_UID=50000
+
+# Airflow Web UI Credentials
+_AIRFLOW_WWW_USER_USERNAME=admin
+_AIRFLOW_WWW_USER_PASSWORD=admin
+
+# GCP Configuration
+GCP_PROJECT_ID=your-project-id
+GCS_BUCKET=your-project-id-entity-resolution
+BQ_DATASET=your-bq-dataset
+
+# Execution Mode: "local" (default) or "cloud"
+EXECUTION_MODE=local
+```
+
+### Step 4: Place Service Account Key
+
+Copy your service account key to the secrets directory:
+
+```bash
+cp /path/to/your/service-account-key.json secrets/gcp-sa-key.json
+```
+
+> **Security Note:** The `secrets/` directory is in `.gitignore` and will NOT be committed to git.
+
+### Step 5: Restart Docker Containers
+
+```bash
+# Restart to pick up new environment variables and credentials
+docker compose down
+docker compose up -d
+
+# Verify credentials are mounted
+docker compose exec airflow-scheduler ls -la /opt/airflow/secrets/
+# Should show: gcp-sa-key.json
+```
+
+### Step 6: Run Pipeline in Cloud Mode
+
+**Option A: One-time cloud run (recommended for testing)**
+
+```bash
+# Trigger with cloud mode via DAG config
+docker compose exec airflow-webserver airflow dags trigger er_data_pipeline \
+  --conf '{"execution_mode": "cloud"}'
+```
+
+**Option B: Set cloud as default mode**
+
+Edit `.env` file:
+```bash
+EXECUTION_MODE=cloud
+```
+
+Then restart and trigger normally:
+```bash
+docker compose restart airflow-webserver airflow-scheduler
+docker compose exec airflow-webserver airflow dags trigger er_data_pipeline
+```
+
+### What Gets Uploaded
+
+When running in cloud mode, the pipeline uploads:
+
+| Destination | Files | Description |
+|-------------|-------|-------------|
+| **GCS** | `analytics/{date}/merged_all.csv` | 287K merged entity records |
+| **GCS** | `analytics/{date}/merged_pairs.csv` | 60K training pairs |
+| **GCS** | `training/{date}/{entity_type}/*.csv` | Train/val/test splits |
+| **GCS** | `metrics/{date}/bias_report.json`, `quality_gate.json` | Validation reports |
+| **BigQuery** | `{dataset}.accounts` | Full accounts table |
+
+### Verify Cloud Upload
+
+**Check GCS:**
+```bash
+# List uploaded files
+gsutil ls -r gs://${GCS_BUCKET}/
+
+# Check file sizes
+gsutil du -s gs://${GCS_BUCKET}/analytics/
+gsutil du -s gs://${GCS_BUCKET}/training/
+```
+
+**Check BigQuery:**
+```bash
+# Query row count
+bq query --project_id=${PROJECT_ID} \
+  "SELECT COUNT(*) as total FROM ${BQ_DATASET}.accounts"
+
+# Query by entity type
+bq query --project_id=${PROJECT_ID} \
+  "SELECT entity_type, COUNT(*) as count
+   FROM ${BQ_DATASET}.accounts
+   GROUP BY entity_type"
+```
+
+**Expected Results:**
+```
++--------+
+| total  |
++--------+
+| 287330 |
++--------+
+
++-------------+--------+
+| entity_type | count  |
++-------------+--------+
+| PERSON      | 137330 |
+| PRODUCT     | 100000 |
+| PUBLICATION |  50000 |
++-------------+--------+
+```
+
+### Monitoring Cloud Tasks
+
+In Airflow UI (http://localhost:8080), monitor these cloud-specific tasks:
+
+| Task | Description | Duration |
+|------|-------------|----------|
+| `decide_execution_path` | Selects cloud or local path | ~1s |
+| `upload_to_gcs` | Uploads 16 files to GCS | ~5-10s |
+| `load_to_bigquery` | Loads accounts to BigQuery | ~5-10s |
+| `verify_and_complete` | Verifies uploads succeeded | ~1s |
+
+### Troubleshooting Cloud Integration
+
+**Error: "The specified bucket does not exist"**
+```bash
+# Create the bucket
+gcloud storage buckets create gs://${GCS_BUCKET} --project=${PROJECT_ID}
+```
+
+**Error: "Permission denied" on GCS**
+```bash
+# Verify service account has Storage Admin role
+gcloud projects get-iam-policy ${PROJECT_ID} \
+  --filter="bindings.members:entity-resolution-sa"
+```
+
+**Error: "Dataset not found" in BigQuery**
+```bash
+# Create the dataset
+bq mk --dataset ${PROJECT_ID}:${BQ_DATASET}
+```
+
+**Error: "Invalid credentials"**
+```bash
+# Verify key file exists and is valid JSON
+cat secrets/gcp-sa-key.json | jq '.client_email'
+
+# Test authentication
+docker compose exec airflow-scheduler \
+  python -c "from google.cloud import storage; print(storage.Client().project)"
+```
+
+### Cost Considerations
+
+| Resource | Estimated Cost | Notes |
+|----------|---------------|-------|
+| GCS Storage | ~$0.02/GB/month | ~100MB per run |
+| BigQuery Storage | ~$0.02/GB/month | ~50MB per run |
+| BigQuery Queries | $5/TB scanned | First 1TB free |
+| **Total per run** | **< $0.01** | Minimal for dev/test |
+
+> **Tip:** Use `EXECUTION_MODE=local` for development to avoid cloud costs.
 
 ---
 

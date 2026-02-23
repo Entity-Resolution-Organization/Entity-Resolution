@@ -20,9 +20,9 @@ x-airflow-common: &airflow-common
     AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
     AIRFLOW__WEBSERVER__RBAC: 'true'
     # GCP Configuration (set these in .env file for production)
-    GCP_PROJECT_ID: ${GCP_PROJECT_ID:-entity-resolution-487121}
-    GCS_BUCKET: ${GCS_BUCKET:-entity-resolution-bucket-1}
-    BQ_DATASET: ${BQ_DATASET:-entity_resolution_bq}
+    GCP_PROJECT_ID: ${GCP_PROJECT_ID:-your-gcp-project-id}
+    GCS_BUCKET: ${GCS_BUCKET:-your-gcs-bucket}
+    BQ_DATASET: ${BQ_DATASET:-your-bq-dataset}
     # Pipeline Mode - set to "false" for GCS/BigQuery production
     LOCAL_MODE: "true"
     # Execution Mode: "local" (skip cloud) or "cloud" (upload to GCS/BigQuery)
@@ -38,6 +38,10 @@ x-airflow-common: &airflow-common
     - ./data:/opt/airflow/data
     - ./logs:/opt/airflow/logs
     - ./secrets:/opt/airflow/secrets:ro
+    # DVC integration - mount repo config, git repo (from parent), and remote storage
+    - ./.dvc:/opt/airflow/.dvc
+    - ../.git:/opt/airflow/.git:ro
+    - ../dvc-storage:/opt/airflow/dvc-storage
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on: &airflow-common-depends-on
     postgres:
