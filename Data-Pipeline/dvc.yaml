@@ -1,15 +1,69 @@
 # =============================================================================
 # DVC Pipeline - Entity Resolution Data Pipeline
 # =============================================================================
-# Run full pipeline: dvc repro
-# Run single stage: dvc repro <stage_name>
-# Check status: dvc status
+# IMPORTANT: This pipeline is orchestrated by Apache Airflow
+#
+# How to run:
+#   1. Start Airflow: docker-compose up -d
+#   2. Trigger DAG: airflow dags trigger er_data_pipeline
+#   3. DVC tracks outputs automatically after pipeline completes
+#
+# Manual DVC commands (if needed):
+#   - Check status: dvc status
+#   - Push to remote: dvc push
+#   - Pull from remote: dvc pull
+#   - Show DAG: dvc dag
 # =============================================================================
+
+# -----------------------------------------------------------------------------
+# Airflow-Orchestrated Pipeline
+# -----------------------------------------------------------------------------
+# The full pipeline runs via Airflow DAG (dags/airflow_data_dag.py)
+# DVC is used for:
+#   1. Data versioning (automatic after each run)
+#   2. Remote storage (GCS or local ../dvc-storage)
+#   3. Reproducibility (checkout any previous data version)
+#
+# Pipeline outputs tracked by DVC:
+#   - data/processed/     Per-dataset transformed outputs
+#   - data/training/      Train/val/test splits by entity type
+#   - data/analytics/     Merged data for bias detection
+#   - data/metrics/       Validation and quality reports
+# -----------------------------------------------------------------------------
 
 stages:
   # ---------------------------------------------------------------------------
-  # Stage 1: Generate/Download Raw Data
+  # Stage: Full Pipeline (Airflow-Orchestrated)
   # ---------------------------------------------------------------------------
+  # This stage documents the Airflow pipeline for DVC visibility
+  # Actual execution happens through Airflow DAG, not `dvc repro`
+  full_pipeline:
+    cmd: echo "Pipeline runs via Airflow DAG - see dags/airflow_data_dag.py"
+    desc: "Full entity resolution pipeline (run via Airflow)"
+    outs:
+      - data/processed/:
+          cache: true
+          persist: true
+      - data/training/:
+          cache: true
+          persist: true
+      - data/analytics/:
+          cache: true
+          persist: true
+    metrics:
+      - data/metrics/quality_gate_results.json:
+          cache: false
+      - data/metrics/bias_report.json:
+          cache: false
+      - data/metrics/schema_validation_results.json:
+          cache: false
+      - data/metrics/training_split_validation.json:
+          cache: false
+
+  # ---------------------------------------------------------------------------
+  # Stage: Generate Test Data (Standalone)
+  # ---------------------------------------------------------------------------
+  # Can be run independently: dvc repro generate_data
   generate_data:
     cmd: python scripts/generate_test_data.py --dataset pseudopeople --output-dir data
     deps:
@@ -25,24 +79,9 @@ stages:
     desc: "Generate synthetic entity data for testing"
 
   # ---------------------------------------------------------------------------
-  # Stage 2: Preprocess Data (Normalize, Corrupt, Generate Pairs)
+  # Stage: Validate Data (Standalone)
   # ---------------------------------------------------------------------------
-  preprocess_data:
-    cmd: python scripts/generate_test_data.py --dataset pseudopeople --output-dir data
-    deps:
-      - data/raw/pseudopeople.csv
-      - scripts/preprocessing.py
-      - scripts/generate_test_data.py
-    outs:
-      - data/processed/pseudopeople_accounts.csv:
-          cache: true
-      - data/processed/pseudopeople_pairs.csv:
-          cache: true
-    desc: "Normalize entities and generate training pairs"
-
-  # ---------------------------------------------------------------------------
-  # Stage 3: Validate Data Quality
-  # ---------------------------------------------------------------------------
+  # Can be run independently: dvc repro validate_data
   validate_data:
     cmd: python scripts/schema_validation.py --accounts data/processed/pseudopeople_accounts.csv --pairs data/processed/pseudopeople_pairs.csv --output data/metrics
     deps:
@@ -55,8 +94,9 @@ stages:
     desc: "Validate schema and data quality"
 
   # ---------------------------------------------------------------------------
-  # Stage 4: Bias Detection
+  # Stage: Bias Detection (Standalone)
   # ---------------------------------------------------------------------------
+  # Can be run independently: dvc repro detect_bias
   detect_bias:
     cmd: python scripts/bias_detection.py --accounts data/processed/pseudopeople_accounts.csv --pairs data/processed/pseudopeople_pairs.csv --output data/metrics
     deps:
@@ -69,17 +109,48 @@ stages:
     desc: "Analyze data bias across entity types, languages, geography, and label distribution"
 
 # =============================================================================
-# Pipeline Visualization:
+# Pipeline Architecture:
 #
-#   generate_data
-#        │
-#        ▼
-#   preprocess_data
-#        │
-#        ▼
-#   validate_data
-#        │
-#        ▼
-#   detect_bias
+#   [Airflow DAG: er_data_pipeline]
+#        |
+#        v
+#   +------------------+
+#   | 1. Load (6x)     |  Load all datasets in parallel
+#   +------------------+
+#        |
+#        v
+#   +------------------+
+#   | 2. Validate All  |  Consolidated validation
+#   +------------------+
+#        |
+#        v
+#   +------------------+
+#   | 3. Transform (6x)|  Transform datasets in parallel
+#   +------------------+
+#        |
+#        v
+#   +------------------+
+#   | 4. Organize      |  Create training + analytics outputs
+#   +------------------+
+#        |
+#        v
+#   +------------------+
+#   | 5. Validate (3x) |  Training splits, Schema, Bias
+#   +------------------+
+#        |
+#        v
+#   +------------------+
+#   | 6. Quality Gate  |  Go/No-Go decision
+#   +------------------+
+#        |
+#        v
+#   +------------------+
+#   | 7. Cloud/Local   |  Branch based on environment
+#   +------------------+
+#        |
+#        v
+#   +------------------+
+#   | 8. DVC Version   |  Auto-version all outputs
+#   +------------------+
 #
 # =============================================================================

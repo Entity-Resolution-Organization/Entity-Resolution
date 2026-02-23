@@ -55,11 +55,12 @@ pytest-asyncio>=0.21.0,<1.0.0  # For async test support
 
 # -----------------------------------------------------------------------------
 # Code Quality (Development)
+# Note: Versions controlled by Airflow constraints for Docker compatibility
 # -----------------------------------------------------------------------------
-black>=23.0.0,<24.0.0
-flake8>=6.0.0,<7.0.0
-isort>=5.12.0,<6.0.0
-mypy>=1.5.0,<2.0.0
+black>=23.0.0
+flake8>=6.0.0
+isort>=5.12.0
+mypy>=1.2.0
 
 # -----------------------------------------------------------------------------
 # Type Stubs (for mypy)
