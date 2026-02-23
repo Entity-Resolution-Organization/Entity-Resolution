@@ -49,6 +49,8 @@ class NumpyEncoder(json.JSONEncoder):
         if isinstance(obj, np.bool_):
             return bool(obj)
         return super().default(obj)
+
+
 from airflow import DAG
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import BranchPythonOperator, PythonOperator
@@ -75,10 +77,10 @@ EXECUTION_MODE = os.getenv("EXECUTION_MODE", "local")
 LOCAL_DATA_DIR = "/opt/airflow/data"
 TMP_DIR = "/tmp/laundrograph"
 
-# GCP Configuration
-GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID", "entity-resolution-487121")
-GCS_BUCKET = os.getenv("GCS_BUCKET", "entity-resolution-bucket-1")
-BQ_DATASET = os.getenv("BQ_DATASET", "entity_resolution_bq")
+# GCP Configuration (set via environment variables or .env file)
+GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID", "your-gcp-project-id")
+GCS_BUCKET = os.getenv("GCS_BUCKET", "your-gcs-bucket")
+BQ_DATASET = os.getenv("BQ_DATASET", "your-bq-dataset")
 
 # Dataset Configuration
 DATASETS = [
@@ -655,8 +657,11 @@ def quality_gate_check(**context):
 
 
 def decide_execution_path(**context):
-    """Branch based on execution mode."""
-    mode = os.getenv("EXECUTION_MODE", "local")
+    """Branch based on execution mode (from DAG conf or environment)."""
+    # Check DAG run conf first, then fall back to environment variable
+    dag_run = context.get("dag_run")
+    conf = dag_run.conf if dag_run else {}
+    mode = conf.get("execution_mode", os.getenv("EXECUTION_MODE", "local"))
     print(f"[Execution Path] Mode: {mode}")
 
     if mode == "cloud":
@@ -747,11 +752,16 @@ def load_to_bigquery(**context):
     if not os.path.exists(accounts_path):
         accounts_path = f"{base_dir}/processed/merged/accounts.csv"
 
+    # Read CSV to get column names and create STRING schema
+    # (autodetect fails on partial date formats like "1946")
+    df = pd.read_csv(accounts_path, nrows=1)
+    schema = [bigquery.SchemaField(col, "STRING") for col in df.columns]
+
     job_config = bigquery.LoadJobConfig(
         skip_leading_rows=1,
         source_format=bigquery.SourceFormat.CSV,
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-        autodetect=True,
+        schema=schema,
     )
 
     with open(accounts_path, "rb") as f:
@@ -939,7 +949,7 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"""
         # Development mode - DVC/git not configured in Docker
         print("\n[DVC] DEVELOPMENT MODE: DVC/git not fully configured in container")
         print("[DVC] To version this data, run on host:")
-        print(f"  cd Data-Pipeline && dvc add data/processed data/training data/analytics data/metrics")
+        print("  cd Data-Pipeline && dvc add data/processed data/training data/analytics data/metrics")
         print("  dvc push && git add *.dvc && git commit -m 'DVC: version pipeline outputs'")
         push_status = "skipped_dev_mode"
         git_status = "skipped_dev_mode"
