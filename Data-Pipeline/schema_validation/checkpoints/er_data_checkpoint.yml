@@ -3,12 +3,10 @@
 
 name: er_data_checkpoint
 config_version: 1.0
-template_name: null
 module_name: great_expectations.checkpoint
 class_name: Checkpoint
 run_name_template: "%Y%m%d-%H%M%S-er-validation"
-expectation_suite_name: null
-batch_request: null
+
 action_list:
   - name: store_validation_result
     action:
@@ -19,10 +17,26 @@ action_list:
   - name: update_data_docs
     action:
       class_name: UpdateDataDocsAction
-      site_names: []
+      site_names: ["local_site"]
+
 evaluation_parameters: {}
 runtime_configuration: {}
-validations: []
-profilers: []
-ge_cloud_id: null
-expectation_suite_ge_cloud_id: null
+
+validations:
+  # Accounts dataset
+  - batch_request:
+      datasource_name: entity_resolution_datasource
+      data_connector_name: processed_data_connector
+      data_asset_name: accounts
+      data_connector_query:
+        index: -1
+    expectation_suite_name: accounts_suite
+
+  # ER Pairs dataset
+  - batch_request:
+      datasource_name: entity_resolution_datasource
+      data_connector_name: processed_data_connector
+      data_asset_name: er_pairs
+      data_connector_query:
+        index: -1
+    expectation_suite_name: pairs_suite
