@@ -542,6 +542,26 @@ def validate_training_splits(**context):
             f"[Validate Splits] {entity_type}: {'PASSED' if results['success'] else 'FAILED'}"
         )
 
+    # Aggregate results into summary format expected by QualityGate
+    total_entities = len(all_results)
+    passed_entities = sum(1 for r in all_results.values() if r.get("success", False))
+    success_rate = (passed_entities / total_entities * 100) if total_entities > 0 else 0
+
+    # Collect critical failures (data leakage is critical)
+    critical_failures = []
+    for entity_type, results in all_results.items():
+        if results.get("data_leakage", {}).get("has_leakage", False):
+            critical_failures.append(f"{entity_type}: data leakage detected")
+
+    all_results["summary"] = {
+        "success_rate": success_rate,
+        "critical_failures": critical_failures,
+        "total_entities": total_entities,
+        "passed_entities": passed_entities,
+    }
+
+    print(f"[Validate Splits] Summary: {passed_entities}/{total_entities} passed ({success_rate:.0f}%)")
+
     output_path = f"{base_dir}/metrics/training_split_validation.json"
     with open(output_path, "w") as f:
         json.dump(all_results, f, indent=2, cls=NumpyEncoder)
@@ -557,7 +577,7 @@ def schema_validation(**context):
 
     print("[Schema] Validating analytics data schema...")
 
-    validator = SchemaValidator()
+    validator = SchemaValidator(output_dir=f"{base_dir}/metrics")
 
     # Validate merged accounts
     accounts_path = f"{base_dir}/analytics/merged_all.csv"
@@ -572,8 +592,7 @@ def schema_validation(**context):
 
     results = validator.validate_all(accounts_df, pairs_df)
 
-    output_path = f"{base_dir}/metrics/schema_validation_results.json"
-    validator.save_results(results, output_path)
+    validator.save_results(results, "schema_validation_results.json")
 
     print(
         f"[Schema] Validation: {'PASSED' if results['overall_success'] else 'FAILED'}"
@@ -603,7 +622,8 @@ def bias_detection(**context):
     detector = BiasDetector(output_dir=f"{base_dir}/metrics")
     report = detector.generate_bias_report(accounts_df, pairs_df)
 
-    print(f"[Bias] Overall risk: {report.get('overall_risk', 'UNKNOWN')}")
+    overall_risk = report.get("summary", {}).get("overall_bias_risk", "UNKNOWN")
+    print(f"[Bias] Overall risk: {overall_risk}")
 
     ti.xcom_push(key="bias_report", value=report)
     return report
@@ -641,11 +661,11 @@ def quality_gate_check(**context):
         json.dump(decision, f, indent=2)
 
     print(f"\n[Quality Gate] Decision: {decision['decision']}")
-    print(f"[Quality Gate] Schema: {decision.get('schema_pass_rate', 0):.1%}")
-    print(f"[Quality Gate] Training: {decision.get('training_pass_rate', 0):.1%}")
 
     if decision["decision"] == "NO-GO":
-        print(f"[Quality Gate] BLOCKED: {decision.get('failures', [])}")
+        failure_msg = f"Quality gate BLOCKED: {decision.get('failures', [])}"
+        print(f"[Quality Gate] {failure_msg}")
+        raise ValueError(failure_msg)
 
     ti.xcom_push(key="quality_gate_decision", value=decision)
     return decision

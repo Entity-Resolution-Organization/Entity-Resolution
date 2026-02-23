@@ -553,7 +553,7 @@ When running in cloud mode, the pipeline uploads:
 | **GCS** | `analytics/{date}/merged_all.csv` | 287K merged entity records |
 | **GCS** | `analytics/{date}/merged_pairs.csv` | 60K training pairs |
 | **GCS** | `training/{date}/{entity_type}/*.csv` | Train/val/test splits |
-| **GCS** | `metrics/{date}/*.json` | Validation reports |
+| **GCS** | `metrics/{date}/bias_report.json`, `quality_gate.json` | Validation reports |
 | **BigQuery** | `{dataset}.accounts` | Full accounts table |
 
 ### Verify Cloud Upload
