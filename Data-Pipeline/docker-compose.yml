@@ -23,10 +23,6 @@ x-airflow-common: &airflow-common
     GCP_PROJECT_ID: ${GCP_PROJECT_ID:-your-gcp-project-id}
     GCS_BUCKET: ${GCS_BUCKET:-your-gcs-bucket}
     BQ_DATASET: ${BQ_DATASET:-your-bq-dataset}
-    # Pipeline Mode - set to "false" for GCS/BigQuery production
-    LOCAL_MODE: "true"
-    # Execution Mode: "local" (skip cloud) or "cloud" (upload to GCS/BigQuery)
-    EXECUTION_MODE: ${EXECUTION_MODE:-local}
     # GCP Service Account Credentials (mounted from secrets/)
     GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/secrets/gcp-sa-key.json
     # Python path for custom scripts
