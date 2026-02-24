@@ -145,12 +145,22 @@ stages:
 #        |
 #        v
 #   +------------------+
-#   | 7. Cloud/Local   |  Branch based on environment
+#   | 7. DVC Version   |  Version data BEFORE cloud upload
 #   +------------------+
 #        |
 #        v
 #   +------------------+
-#   | 8. DVC Version   |  Auto-version all outputs
+#   | 8. Upload GCS    |  Push to Google Cloud Storage
+#   +------------------+
+#        |
+#        v
+#   +------------------+
+#   | 9. Load BigQuery |  Load tables to BigQuery
+#   +------------------+
+#        |
+#        v
+#   +------------------+
+#   | 10. Complete     |  Pipeline done
 #   +------------------+
 #
 # =============================================================================

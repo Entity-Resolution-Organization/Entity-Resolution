@@ -672,24 +672,6 @@ def quality_gate_check(**context):
 
 
 # =============================================================================
-# PHASE 7: EXECUTION PATH
-# =============================================================================
-
-
-def decide_execution_path(**context):
-    """Branch based on execution mode (from DAG conf or environment)."""
-    # Check DAG run conf first, then fall back to environment variable
-    dag_run = context.get("dag_run")
-    conf = dag_run.conf if dag_run else {}
-    mode = conf.get("execution_mode", os.getenv("EXECUTION_MODE", "local"))
-    print(f"[Execution Path] Mode: {mode}")
-
-    if mode == "cloud":
-        return "upload_to_gcs"
-    return "pipeline_complete_local"
-
-
-# =============================================================================
 # PHASE 8: CLOUD TASKS
 # =============================================================================
 
@@ -1046,7 +1028,7 @@ with DAG(
     1. Load (6 parallel) → Validate All (1) → Transform (6 parallel)
     2. Organize Datasets (1) - Creates BOTH training + analytics outputs
     3. Validation (3 parallel): Training splits, Schema, Bias
-    4. Quality Gate → Cloud Upload (conditional) → DVC Versioning
+    4. Quality Gate →  DVC Versioning Cloud  → Upload (conditional) 
 
     ## DVC Integration
     - Every pipeline run is automatically versioned with DVC
@@ -1121,16 +1103,12 @@ with DAG(
     )
     [validate_splits_task, schema_task, bias_task] >> quality_gate_task
 
-    # Phase 7: Execution path
-    decide_path_task = BranchPythonOperator(
-        task_id="decide_execution_path",
-        python_callable=decide_execution_path,
+    # Phase 7: DVC Data Versioning (runs after either path completes)
+    dvc_track_task = PythonOperator(
+        task_id="dvc_track_and_version",
+        python_callable=dvc_track_and_version,
+        trigger_rule="none_failed_min_one_success",
     )
-    quality_gate_task >> decide_path_task
-
-    # Local completion
-    pipeline_complete_local = EmptyOperator(task_id="pipeline_complete_local")
-    decide_path_task >> pipeline_complete_local
 
     # Cloud tasks
     upload_gcs_task = PythonOperator(
@@ -1146,22 +1124,13 @@ with DAG(
         python_callable=verify_and_complete,
     )
 
-    decide_path_task >> upload_gcs_task >> load_bq_task >> verify_task
-
-    # Phase 8: DVC Data Versioning (runs after either path completes)
-    dvc_track_task = PythonOperator(
-        task_id="dvc_track_and_version",
-        python_callable=dvc_track_and_version,
-        trigger_rule="none_failed_min_one_success",
-    )
-    [pipeline_complete_local, verify_task] >> dvc_track_task
-
     # Final completion
     pipeline_complete = EmptyOperator(
         task_id="pipeline_complete",
         trigger_rule="none_failed_min_one_success",
     )
-    dvc_track_task >> pipeline_complete
+
+    quality_gate_task >> dvc_track_task >> upload_gcs_task >> load_bq_task >> verify_task >> pipeline_complete
 
 
 if __name__ == "__main__":
