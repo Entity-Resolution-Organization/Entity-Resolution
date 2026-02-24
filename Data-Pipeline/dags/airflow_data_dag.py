@@ -72,9 +72,6 @@ from schema_validation import SchemaValidator  # noqa: E402
 # CONFIGURATION
 # =============================================================================
 
-LOCAL_MODE = os.getenv("LOCAL_MODE", "true").lower() == "true"
-EXECUTION_MODE = os.getenv("EXECUTION_MODE", "local")
-LOCAL_DATA_DIR = "/opt/airflow/data"
 TMP_DIR = "/tmp/laundrograph"
 
 # GCP Configuration (set via environment variables or .env file)
@@ -112,7 +109,7 @@ MIN_RECORDS_PER_DATASET = 100
 
 def get_base_dir():
     """Get base directory based on mode."""
-    return LOCAL_DATA_DIR if LOCAL_MODE else TMP_DIR
+    return TMP_DIR
 
 
 def load_config():
