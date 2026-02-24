@@ -216,6 +216,33 @@ transform_wdc_products  transform_amazon_2018 transform_dblp_acm
 
 ## Quick Start
 
+Follow these steps to get the pipeline running in under 10 minutes.
+
+### TL;DR - Quick Commands
+
+```bash
+# 1. Start Airflow
+cd Data-Pipeline
+docker compose up -d
+
+# 2. Wait for services (30 seconds)
+sleep 30
+
+# 3. Trigger pipeline (local mode)
+docker exec data-pipeline-airflow-scheduler-1 airflow dags trigger er_data_pipeline
+
+# 4. Trigger pipeline (cloud mode - requires GCP setup)
+docker exec data-pipeline-airflow-scheduler-1 airflow dags trigger er_data_pipeline \
+  --conf '{"execution_mode": "cloud"}'
+
+# 5. Check status (replace RUN_ID with actual run ID from step 3/4)
+docker exec data-pipeline-airflow-scheduler-1 airflow tasks states-for-dag-run \
+  er_data_pipeline "RUN_ID"
+
+# 6. View Airflow UI
+open http://localhost:8080  # Login: admin/admin
+```
+
 ### Step 1: Clone Repository
 
 ```bash
@@ -271,18 +298,167 @@ Pipeline uploads data to GCS and BigQuery. External users must complete this set
 ### Step 1: Create GCP Project
 
 ```bash
-export PROJECT_ID="your-project-id"
-gcloud config set project ${PROJECT_ID}
+# Edit docker-compose.yml
+# Change: LOCAL_MODE: "true" → LOCAL_MODE: "false"
+
+# Set GCP credentials
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+
+# Restart Airflow
+docker compose restart
 ```
 
-### Step 2: Enable APIs
+---
+
+## Running the Pipeline
+
+### Airflow Web UI
+
+Access at **http://localhost:8080** (credentials: `admin`/`admin`)
+
+**Key pages:**
+- **DAGs**: View and trigger pipelines
+- **Graph**: Visualize task dependencies
+- **Grid**: Monitor task status over time
+- **Logs**: Debug task failures
+
+### Pipeline Trigger Commands
+
+#### Local Mode (Default - No Cloud Uploads)
 
 ```bash
-gcloud services enable storage.googleapis.com
-gcloud services enable bigquery.googleapis.com
+docker exec data-pipeline-airflow-scheduler-1 airflow dags trigger er_data_pipeline
 ```
 
-### Step 3: Create GCS Bucket
+#### Cloud Mode (Uploads to GCS + BigQuery)
+
+```bash
+docker exec data-pipeline-airflow-scheduler-1 airflow dags trigger er_data_pipeline \
+  --conf '{"execution_mode": "cloud"}'
+```
+
+> **Note:** Cloud mode requires GCP credentials configured in `.env` and `secrets/gcp-sa-key.json`
+
+### Monitoring Pipeline Status
+
+#### Check All Task States
+
+```bash
+# First, get the run ID from trigger output, then:
+docker exec data-pipeline-airflow-scheduler-1 airflow tasks states-for-dag-run \
+  er_data_pipeline "manual__2026-02-23T20:45:41+00:00"
+```
+
+#### List Recent DAG Runs
+
+```bash
+docker exec data-pipeline-airflow-scheduler-1 airflow dags list-runs \
+  -d er_data_pipeline --limit 5
+```
+
+#### Check Specific Task State
+
+```bash
+docker exec data-pipeline-airflow-scheduler-1 airflow tasks state \
+  er_data_pipeline quality_gate "manual__2026-02-23T20:45:41+00:00"
+```
+
+### Clean Run (Clear All Data)
+
+Before running a fresh pipeline, clear existing data:
+
+```bash
+# Clear local data directories
+rm -rf data/processed/* data/training/* data/analytics/* data/metrics/* data/raw/*
+
+# Clear container data
+docker exec data-pipeline-airflow-scheduler-1 rm -rf \
+  /opt/airflow/data/processed/* \
+  /opt/airflow/data/training/* \
+  /opt/airflow/data/analytics/* \
+  /opt/airflow/data/metrics/* \
+  /opt/airflow/data/raw/*
+
+# Trigger fresh run
+docker exec data-pipeline-airflow-scheduler-1 airflow dags trigger er_data_pipeline
+```
+
+### Container Management
+
+```bash
+# Restart containers (after code changes)
+docker compose restart airflow-scheduler airflow-webserver
+
+# View container logs
+docker compose logs -f airflow-scheduler
+
+# Check container health
+docker compose ps
+
+# Stop all containers
+docker compose down
+
+# Start all containers
+docker compose up -d
+
+# Rebuild containers (after Dockerfile changes)
+docker compose up -d --build
+```
+
+### Checking Outputs
+
+```bash
+# View processed data (local mount)
+ls -la data/processed/
+ls -la data/training/
+ls -la data/analytics/
+
+# View metrics and reports
+cat data/metrics/bias_report.json | python -m json.tool
+cat data/metrics/quality_gate_results.json | python -m json.tool
+
+# Count records in merged data
+wc -l data/analytics/merged_all.csv
+
+# Check from inside container
+docker exec data-pipeline-airflow-scheduler-1 ls -la /opt/airflow/data/processed/
+```
+
+### Expected Pipeline Output
+
+After a successful run, you should see:
+
+| Directory | Contents |
+|-----------|----------|
+| `data/processed/` | 6 dataset folders with accounts.csv and pairs.csv |
+| `data/training/` | person/, product/, publication/ with train/val/test splits |
+| `data/analytics/` | merged_all.csv (~287K rows), merged_pairs.csv |
+| `data/metrics/` | bias_report.json, quality_gate_results.json, schema_validation_results.json |
+
+### Pipeline Duration
+
+| Mode | Tasks | Duration |
+|------|-------|----------|
+| Local | 26 | ~3-4 minutes |
+| Cloud | 26 | ~4-5 minutes |
+
+---
+
+## Cloud Integration (GCS + BigQuery)
+
+This section covers how to run the pipeline with Google Cloud Platform integration, uploading data to Cloud Storage and BigQuery.
+
+### Prerequisites for Cloud Mode
+
+1. **Google Cloud Project** with billing enabled
+2. **Service Account** with the following roles:
+   - `Storage Admin` (for GCS bucket operations)
+   - `BigQuery Data Editor` (for loading data)
+   - `BigQuery Job User` (for running load jobs)
+3. **GCS Bucket** created in your project
+4. **BigQuery Dataset** created in your project
+
+### Step 1: Create GCP Resources
 
 ```bash
 gcloud storage buckets create gs://${PROJECT_ID}-entity-resolution \
