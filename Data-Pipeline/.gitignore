@@ -1,0 +1,135 @@
+# =============================================================================
+# Entity Resolution Data Pipeline - .gitignore
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Environment & Secrets
+# -----------------------------------------------------------------------------
+.env
+secrets/*.json
+secrets/*.key
+!secrets/README.md
+!secrets/.gitkeep
+!secrets/.gitignore
+
+# -----------------------------------------------------------------------------
+# Python
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*$py.class
+*.so
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# -----------------------------------------------------------------------------
+# Virtual environments
+# -----------------------------------------------------------------------------
+venv/
+env/
+test_env/
+.venv/
+ENV/
+
+# -----------------------------------------------------------------------------
+# IDE
+# -----------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# -----------------------------------------------------------------------------
+# Testing & Coverage
+# -----------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# -----------------------------------------------------------------------------
+# Distribution & Build
+# -----------------------------------------------------------------------------
+dist/
+build/
+*.egg-info/
+*.egg
+*.whl
+
+# -----------------------------------------------------------------------------
+# Jupyter
+# -----------------------------------------------------------------------------
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# -----------------------------------------------------------------------------
+# DVC - Data Version Control
+# -----------------------------------------------------------------------------
+# Ignore data files but track .dvc metadata files
+.dvc/tmp
+.dvc/cache
+dvc-storage/
+
+# Raw data (DVC tracked)
+/data/raw/**/*.csv
+/data/raw/**/*.parquet
+/data/raw/**/*.json
+!/data/raw/**/*.dvc
+!/data/raw/.gitkeep
+
+# Processed data (DVC tracked)
+/data/processed/**/*.csv
+/data/processed/**/*.parquet
+/data/processed/**/*.json
+!/data/processed/**/*.dvc
+!/data/processed/.gitkeep
+
+# Training data (DVC tracked)
+/data/training/**/*.csv
+/data/training/**/*.json
+!/data/training/**/*.dvc
+!/data/training/.gitkeep
+
+# -----------------------------------------------------------------------------
+# Logs (Airflow runtime logs)
+# -----------------------------------------------------------------------------
+logs/*.log
+logs/dag_id=*/
+logs/dag_processor_manager/
+logs/scheduler/
+!logs/__init__.py
+!logs/.gitkeep
+
+# -----------------------------------------------------------------------------
+# Metrics & Reports (regenerated on pipeline runs)
+# -----------------------------------------------------------------------------
+data/metrics/*.json
+data/metrics/*.png
+data/metrics/*.html
+!/data/metrics/.gitkeep
+
+data/reports/
+!/data/reports/.gitkeep
+
+# -----------------------------------------------------------------------------
+# OS Files
+# -----------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.bak
+*.tmp
+
+# -----------------------------------------------------------------------------
+# Airflow
+# -----------------------------------------------------------------------------
+airflow.db
+airflow-webserver.pid
+standalone_admin_password.txt

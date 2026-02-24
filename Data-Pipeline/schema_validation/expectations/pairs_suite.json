@@ -1,0 +1,107 @@
+{
+  "expectation_suite_name": "pairs_suite",
+  "ge_cloud_id": null,
+  "data_asset_type": "Dataset",
+  "meta": {
+    "version": "1.0.0",
+    "description": "Validation suite for entity resolution pairs data"
+  },
+  "expectations": [
+    {
+      "expectation_type": "expect_table_columns_to_match_set",
+      "kwargs": {
+        "column_set": ["id1", "id2", "label"],
+        "exact_match": false
+      },
+      "meta": {
+        "description": "Required columns must exist"
+      }
+    },
+    {
+      "expectation_type": "expect_column_to_exist",
+      "kwargs": {
+        "column": "id1"
+      },
+      "meta": {
+        "description": "ID1 column must exist"
+      }
+    },
+    {
+      "expectation_type": "expect_column_to_exist",
+      "kwargs": {
+        "column": "id2"
+      },
+      "meta": {
+        "description": "ID2 column must exist"
+      }
+    },
+    {
+      "expectation_type": "expect_column_to_exist",
+      "kwargs": {
+        "column": "label"
+      },
+      "meta": {
+        "description": "Label column must exist"
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": {
+        "column": "id1",
+        "mostly": 1.0
+      },
+      "meta": {
+        "description": "ID1 column must not have null values"
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": {
+        "column": "id2",
+        "mostly": 1.0
+      },
+      "meta": {
+        "description": "ID2 column must not have null values"
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": {
+        "column": "label",
+        "mostly": 1.0
+      },
+      "meta": {
+        "description": "Label column must not have null values"
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "label",
+        "value_set": [0, 1]
+      },
+      "meta": {
+        "description": "Label values must be 0 (non-match) or 1 (match)"
+      }
+    },
+    {
+      "expectation_type": "expect_table_row_count_to_be_between",
+      "kwargs": {
+        "min_value": 1,
+        "max_value": 10000000
+      },
+      "meta": {
+        "description": "Table should have between 1 and 10M rows"
+      }
+    },
+    {
+      "expectation_type": "expect_compound_columns_to_be_unique",
+      "kwargs": {
+        "column_list": ["id1", "id2"]
+      },
+      "meta": {
+        "description": "Each pair (id1, id2) should be unique"
+      }
+    }
+  ]
+}
