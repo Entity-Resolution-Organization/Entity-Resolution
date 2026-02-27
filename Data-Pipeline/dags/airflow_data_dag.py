@@ -79,6 +79,10 @@ GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID", "your-gcp-project-id")
 GCS_BUCKET = os.getenv("GCS_BUCKET", "your-gcs-bucket")
 BQ_DATASET = os.getenv("BQ_DATASET", "your-bq-dataset")
 
+# DVC bucket (for logging only — actual config is in .dvc/config)
+# Separate from GCS_BUCKET which is used by upload_to_gcs() in Phase 8
+DVC_GCS_BUCKET = "entity-resolution-dvc-bucket"
+
 # Dataset Configuration
 DATASETS = [
     "pseudopeople",
@@ -818,7 +822,9 @@ def dvc_track_and_version(**context):
     # In container: /opt/airflow (has .dvc/ and .git/ from parent mounts)
     dvc_repo_root = "/opt/airflow"
 
-    print("[DVC] Starting data versioning (GCS remote)...")
+    print("[DVC] Starting data versioning...")
+    print(f"[DVC] DVC remote: gs://{DVC_GCS_BUCKET}")
+    print(f"[DVC] (Airflow GCS bucket is separate: gs://{GCS_BUCKET})")
     print(f"[DVC] Repo root: {dvc_repo_root}")
     print(f"[DVC] Data dir: {base_dir}")
 
@@ -944,7 +950,7 @@ def dvc_track_and_version(**context):
     # Step 3: Push to GCS
     # -------------------------------------------------------------------------
 
-    print("\n[DVC] Step 3: Pushing to GCS...")
+    print(f"\n[DVC] Step 3: Pushing to gs://{DVC_GCS_BUCKET}...")
     push_result = run_cmd("dvc push", check=False)
     combined = push_result.stdout + push_result.stderr
 
@@ -972,7 +978,8 @@ def dvc_track_and_version(**context):
         "run_id": str(run_id),
         "git_commit_at_run": git_hash,
         "dvc_push_status": push_status,
-        "dvc_remote": "gs://unifyml-dvc-storage",
+        "dvc_remote": f"gs://{DVC_GCS_BUCKET}",
+        "airflow_gcs_bucket": f"gs://{GCS_BUCKET}",
         "tracked_items": tracked_items,
         "dvc_errors": dvc_errors,
         "total_size_mb": round(total_size_bytes / (1024 * 1024), 2),
@@ -987,7 +994,7 @@ def dvc_track_and_version(**context):
     print("\n" + "=" * 60)
     print("[DVC] DATA VERSIONING COMPLETE")
     print("=" * 60)
-    print(f"  Remote:        gs://unifyml-dvc-storage")
+    print(f"  DVC Bucket:    gs://{DVC_GCS_BUCKET}")
     print(f"  Git (at run):  {git_hash[:12] if git_hash != 'unknown' else 'N/A'}")
     print(f"  Total Size:    {version_info['total_size_mb']:.2f} MB")
     print(f"  Items Tracked: {len(tracked_items)}")
