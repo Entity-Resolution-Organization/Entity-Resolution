@@ -1,0 +1,20 @@
+# Add patterns of files dvc should ignore, which could improve the performance. 
+# Learn more at https://dvc.org/doc/user-guide/dvcignore
+
+# IDE and OS files
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Git directory
+.git/
+
+# Virtual environments
+venv/
+.env/
+
+# Logs and temp files
+*.log
+logs/
