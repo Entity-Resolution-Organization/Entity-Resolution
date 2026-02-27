@@ -17,7 +17,7 @@ set -euo pipefail
 # --- Config ---
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 PIPELINE_DIR="${REPO_ROOT}/Data-Pipeline"
-DAG_ID="airflow_data_pipeline"
+DAG_ID="er_data_pipeline"
 POLL_INTERVAL=30  # seconds between status checks
 
 # Colors for output
