@@ -12,7 +12,7 @@
 [core]
     # Default remote used by `dvc push` and `dvc pull`
     remote = gcs
-    autostage = true
+    autostage = false
 
 ['remote "gcs"']
     # Path to the DVC storage GCS bucket
