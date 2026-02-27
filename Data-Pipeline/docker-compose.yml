@@ -24,7 +24,8 @@ x-airflow-common: &airflow-common
     GCS_BUCKET: ${GCS_BUCKET:-your-gcs-bucket}
     BQ_DATASET: ${BQ_DATASET:-your-bq-dataset}
     # GCP Service Account Credentials (mounted from secrets/)
-    GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/secrets/gcp-sa-key.json
+    # GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/secrets/gcp-sa-key.json
+    GOOGLE_CLOUD_PROJECT: ${GCP_PROJECT_ID:-your-gcp-project-id}
     # Python path for custom scripts
     PYTHONPATH: /opt/airflow/scripts
   volumes:
@@ -34,7 +35,7 @@ x-airflow-common: &airflow-common
     - ./config:/opt/airflow/config
     - ./data:/opt/airflow/data
     - ./logs:/opt/airflow/logs
-    - ./secrets:/opt/airflow/secrets:ro
+    # - ./secrets:/opt/airflow/secrets:ro
     - ../.dvc:/opt/airflow/.dvc
     - ../.git:/opt/airflow/.git:ro
   user: "${AIRFLOW_UID:-50000}:0"
