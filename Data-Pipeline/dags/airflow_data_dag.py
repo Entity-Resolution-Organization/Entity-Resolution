@@ -72,7 +72,7 @@ from schema_validation import SchemaValidator  # noqa: E402
 # CONFIGURATION
 # =============================================================================
 
-TMP_DIR = "/tmp/laundrograph"
+TMP_DIR = "/opt/airflow/data"
 
 # GCP Configuration (set via environment variables or .env file)
 GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID", "your-gcp-project-id")
@@ -557,7 +557,9 @@ def validate_training_splits(**context):
         "passed_entities": passed_entities,
     }
 
-    print(f"[Validate Splits] Summary: {passed_entities}/{total_entities} passed ({success_rate:.0f}%)")
+    print(
+        f"[Validate Splits] Summary: {passed_entities}/{total_entities} passed ({success_rate:.0f}%)"
+    )
 
     output_path = f"{base_dir}/metrics/training_split_validation.json"
     with open(output_path, "w") as f:
@@ -795,49 +797,50 @@ def verify_and_complete(**context):
 
 def dvc_track_and_version(**context):
     """
-    Track all pipeline outputs with DVC and push to remote storage.
+    Track all pipeline outputs with DVC and push to GCS.
 
-    This task:
-    1. Tracks all pipeline outputs with DVC (data/processed, training, analytics, metrics)
-    2. Pushes data to DVC remote storage
-    3. Commits DVC tracking files to git with run metadata
-    4. Logs DVC commit hash and data sizes
+    Path mapping (container → host → DVC):
+    Container:  /opt/airflow/data/processed/
+    Host:       ENTITY-RESOLUTION/Data-Pipeline/data/processed/
+    DVC target: Data-Pipeline/data/processed/  (relative to repo root)
 
-    This completes the MLOps loop: Airflow orchestrates, DVC versions.
-
-    Note: In Docker development mode, DVC tracking may be skipped if git/dvc
-    are not properly configured. Run `dvc add` manually on the host for local dev.
+    Git commit of .dvc files happens on the HOST after pipeline completes:
+    cd ENTITY-RESOLUTION
+    git add Data-Pipeline/data/*.dvc Data-Pipeline/data/.gitignore
+    git commit -m "DVC: version pipeline outputs"
     """
     ti = context["task_instance"]
     run_id = context.get("run_id", "unknown")
-    base_dir = get_base_dir()
+    base_dir = get_base_dir()  # /opt/airflow/data
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-    # DVC repo root is /opt/airflow (where .dvc folder is mounted)
-    # Data directory is /opt/airflow/data
+    # DVC repo root = where .dvc/ and .git/ are mounted
+    # In container: /opt/airflow (has .dvc/ and .git/ from parent mounts)
     dvc_repo_root = "/opt/airflow"
 
-    print("[DVC] Starting data versioning...")
+    print("[DVC] Starting data versioning (GCS remote)...")
     print(f"[DVC] Repo root: {dvc_repo_root}")
     print(f"[DVC] Data dir: {base_dir}")
 
-    # Check if we're in a valid DVC/git environment
+    # -------------------------------------------------------------------------
+    # Validate environment
+    # -------------------------------------------------------------------------
     dvc_available = os.path.isdir(f"{dvc_repo_root}/.dvc")
     git_available = os.path.isdir(f"{dvc_repo_root}/.git")
 
+    if not dvc_available:
+        raise RuntimeError(
+            "DVC not configured: .dvc/ not found at /opt/airflow/.dvc. "
+            "Ensure ../.dvc is mounted in docker-compose.yml"
+        )
+    if not git_available:
+        raise RuntimeError(
+            "Git not found: .git/ not found at /opt/airflow/.git. "
+            "Ensure ../.git is mounted in docker-compose.yml"
+        )
+
     print(f"[DVC] DVC config available: {dvc_available}")
     print(f"[DVC] Git repo available: {git_available}")
-
-    # Directories to track with DVC (relative paths from repo root)
-    dvc_targets = [
-        "data/processed",
-        "data/training",
-        "data/analytics",
-        "data/metrics",
-    ]
-
-    tracked_items = []
-    total_size_bytes = 0
 
     def run_cmd(cmd, cwd=None, check=True):
         """Run shell command and return output."""
@@ -853,6 +856,40 @@ def dvc_track_and_version(**context):
             print(f"[DVC] stderr: {result.stderr}")
         return result
 
+    # Verify remote
+    remote_check = run_cmd("dvc remote default", check=False)
+    print(f"[DVC] Active remote: {remote_check.stdout.strip()}")
+
+    # -------------------------------------------------------------------------
+    # Step 1: Calculate output sizes
+    # -------------------------------------------------------------------------
+    # IMPORTANT: Paths are relative to dvc_repo_root (/opt/airflow) which maps to ENTITY-RESOLUTION/ on host.
+    # /opt/airflow/data/ = ENTITY-RESOLUTION/Data-Pipeline/data/ on host
+    # So DVC sees these as "data/" relative to /opt/airflow
+    #
+    # But wait — on the HOST, these files are at Data-Pipeline/data/
+    # relative to the repo root. The container mount flattens this:
+    #   Host: ENTITY-RESOLUTION/Data-Pipeline/data → Container: /opt/airflow/data
+    #   Host: ENTITY-RESOLUTION/.dvc              → Container: /opt/airflow/.dvc
+    #   Host: ENTITY-RESOLUTION/.git              → Container: /opt/airflow/.git
+    #
+    # So from DVC's perspective inside the container, the targets are "data/*"
+    # and on the host they'll appear as "data/*" .dvc files at /opt/airflow/
+    # which maps back to Data-Pipeline/data/ on the host.
+    #
+    # This works because DVC creates .dvc files next to the tracked directories.
+
+    # Directories to track with DVC (relative paths from repo root)
+    dvc_targets = [
+        "data/processed",
+        "data/training",
+        "data/analytics",
+        "data/metrics",
+    ]
+
+    tracked_items = []
+    total_size_bytes = 0
+
     def get_dir_size(path):
         """Get total size of directory in bytes."""
         total = 0
@@ -866,7 +903,7 @@ def dvc_track_and_version(**context):
             total = os.path.getsize(path)
         return total
 
-    # Step 1: Calculate sizes and track with DVC
+    # Calculate sizes and track with DVC
     print("[DVC] Step 1: Calculating output sizes...")
     for target in dvc_targets:
         # Full path for existence check and size calculation
@@ -881,7 +918,17 @@ def dvc_track_and_version(**context):
         else:
             print(f"[DVC] Skipping (not found): {full_path}")
 
+    if not tracked_items:
+        print("[DVC] WARNING: No pipeline outputs found!")
+        ti.xcom_push(key="dvc_version_info", value={"status": "no_outputs"})
+        return {"status": "no_outputs"}
+
+    # -------------------------------------------------------------------------
+    # Step 2: Track with DVC
+    # -------------------------------------------------------------------------
+
     # Only attempt DVC operations if properly configured
+    dvc_errors = []
     if dvc_available and git_available:
         print("\n[DVC] Step 2: Tracking outputs with DVC...")
         for item in tracked_items:
@@ -889,105 +936,68 @@ def dvc_track_and_version(**context):
             if result.returncode == 0:
                 print(f"[DVC] Tracked: {item['path']}")
             else:
-                print(f"[DVC] Could not track {item['path']}: {result.stderr.strip()}")
+                err = result.stderr.strip()
+                print(f"[DVC]   FAILED: {item['path']} — {err}")
+                dvc_errors.append({"path": item["path"], "error": err})
 
-        # Push to DVC remote
-        print("\n[DVC] Step 3: Pushing to remote storage...")
-        push_result = run_cmd("dvc push", check=False)
+    # -------------------------------------------------------------------------
+    # Step 3: Push to GCS
+    # -------------------------------------------------------------------------
 
-        if push_result.returncode == 0:
-            print("[DVC] Successfully pushed to remote storage")
-            push_status = "success"
-        elif "Everything is up to date" in (push_result.stderr + push_result.stdout):
-            print("[DVC] Remote already up to date")
-            push_status = "up_to_date"
-        else:
-            print(f"[DVC] Push warning: {push_result.stderr}")
-            push_status = "failed"
+    print("\n[DVC] Step 3: Pushing to GCS...")
+    push_result = run_cmd("dvc push", check=False)
+    combined = push_result.stdout + push_result.stderr
 
-        # Git commit DVC tracking files
-        print("\n[DVC] Step 4: Committing DVC tracking files to git...")
-
-        # Stage .dvc files and .gitignore updates
-        run_cmd("git add *.dvc .gitignore data/**/*.dvc data/.gitignore 2>/dev/null || true")
-
-        # Create commit message with run metadata
-        commit_msg = f"""DVC: Auto-version pipeline outputs
-
-Run ID: {run_id}
-Timestamp: {timestamp}
-Total Size: {total_size_bytes / (1024 * 1024):.2f} MB
-Tracked Items: {len(tracked_items)}
-
-Outputs:
-- data/processed/: Per-dataset transformed outputs
-- data/training/: Train/val/test splits by entity type
-- data/analytics/: Merged data for bias detection
-- data/metrics/: Validation and quality reports
-
-Automated by Airflow er_data_pipeline DAG
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"""
-
-        # Check if there are changes to commit
-        status_result = run_cmd("git status --porcelain")
-        if status_result.stdout.strip():
-            commit_result = run_cmd(
-                f'git commit -m "{commit_msg}"',
-                check=False,
-            )
-            if commit_result.returncode == 0:
-                print("[DVC] Git commit created successfully")
-                git_status = "committed"
-            else:
-                print(f"[DVC] Git commit warning: {commit_result.stderr}")
-                git_status = "failed" if "nothing to commit" not in commit_result.stderr else "no_changes"
-        else:
-            print("[DVC] No changes to commit (data unchanged)")
-            git_status = "no_changes"
+    if push_result.returncode == 0:
+        print("[DVC]   Push successful")
+        push_status = "success"
+    elif "Everything is up to date" in combined:
+        print("[DVC]   Already up to date")
+        push_status = "up_to_date"
     else:
-        # Development mode - DVC/git not configured in Docker
-        print("\n[DVC] DEVELOPMENT MODE: DVC/git not fully configured in container")
-        print("[DVC] To version this data, run on host:")
-        print("  cd Data-Pipeline && dvc add data/processed data/training data/analytics data/metrics")
-        print("  dvc push && git add *.dvc && git commit -m 'DVC: version pipeline outputs'")
-        push_status = "skipped_dev_mode"
-        git_status = "skipped_dev_mode"
+        print(f"[DVC]   Push failed: {push_result.stderr}")
+        push_status = "failed"
 
-    # Step 4: Get DVC status and git hash
-    print("\n[DVC] Step 4: Collecting version info...")
-
+    # -------------------------------------------------------------------------
+    # Step 4: Save version metadata
+    # -------------------------------------------------------------------------
+    #  Git commit happens on HOST, not here (.git is read-only)
     git_hash_result = run_cmd("git rev-parse HEAD", check=False)
-    git_hash = git_hash_result.stdout.strip() if git_hash_result.returncode == 0 else "unknown"
+    git_hash = (
+        git_hash_result.stdout.strip() if git_hash_result.returncode == 0 else "unknown"
+    )
 
-    dvc_status_result = run_cmd("dvc status", check=False)
-
-    # Compile results
     version_info = {
         "timestamp": timestamp,
         "run_id": str(run_id),
-        "git_commit": git_hash,
-        "git_status": git_status,
+        "git_commit_at_run": git_hash,
         "dvc_push_status": push_status,
+        "dvc_remote": "gs://unifyml-dvc-storage",
         "tracked_items": tracked_items,
+        "dvc_errors": dvc_errors,
         "total_size_mb": round(total_size_bytes / (1024 * 1024), 2),
-        "dvc_status": dvc_status_result.stdout.strip() if dvc_status_result.returncode == 0 else "unavailable",
     }
 
-    # Save version info
     version_file = f"{base_dir}/metrics/dvc_version_info.json"
     os.makedirs(os.path.dirname(version_file), exist_ok=True)
     with open(version_file, "w") as f:
         json.dump(version_info, f, indent=2)
 
-    # Print summary
+    # Summary
     print("\n" + "=" * 60)
     print("[DVC] DATA VERSIONING COMPLETE")
     print("=" * 60)
-    print(f"  Git Commit: {git_hash[:12] if git_hash != 'unknown' else 'N/A'}")
-    print(f"  Total Size: {version_info['total_size_mb']:.2f} MB")
+    print(f"  Remote:        gs://unifyml-dvc-storage")
+    print(f"  Git (at run):  {git_hash[:12] if git_hash != 'unknown' else 'N/A'}")
+    print(f"  Total Size:    {version_info['total_size_mb']:.2f} MB")
     print(f"  Items Tracked: {len(tracked_items)}")
-    print(f"  Push Status: {push_status}")
-    print(f"  Git Status: {git_status}")
+    print(f"  Push Status:   {push_status}")
+    if dvc_errors:
+        print(f"  Errors:        {len(dvc_errors)} items failed")
+    print(f"\n  To commit on host:")
+    print(f"    cd ENTITY-RESOLUTION")
+    print(f"    git add Data-Pipeline/data/*.dvc Data-Pipeline/data/.gitignore")
+    print(f"    git commit -m 'DVC: version run {run_id}'")
     print("=" * 60)
 
     ti.xcom_push(key="dvc_version_info", value=version_info)
@@ -1127,7 +1137,14 @@ with DAG(
         trigger_rule="none_failed_min_one_success",
     )
 
-    quality_gate_task >> dvc_track_task >> upload_gcs_task >> load_bq_task >> verify_task >> pipeline_complete
+    (
+        quality_gate_task
+        >> dvc_track_task
+        >> upload_gcs_task
+        >> load_bq_task
+        >> verify_task
+        >> pipeline_complete
+    )
 
 
 if __name__ == "__main__":
