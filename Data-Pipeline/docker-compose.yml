@@ -28,16 +28,15 @@ x-airflow-common: &airflow-common
     # Python path for custom scripts
     PYTHONPATH: /opt/airflow/scripts
   volumes:
+    # Host machine/Repo folder: Docker container directory equivalent
     - ./dags:/opt/airflow/dags
     - ./scripts:/opt/airflow/scripts
     - ./config:/opt/airflow/config
     - ./data:/opt/airflow/data
     - ./logs:/opt/airflow/logs
     - ./secrets:/opt/airflow/secrets:ro
-    # DVC integration - mount repo config, git repo (from parent), and remote storage
-    - ./.dvc:/opt/airflow/.dvc
+    - ../.dvc:/opt/airflow/.dvc
     - ../.git:/opt/airflow/.git:ro
-    - ../dvc-storage:/opt/airflow/dvc-storage
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on: &airflow-common-depends-on
     postgres:
