@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================================
-# run_pipeline.sh — Trigger Airflow DAG and auto-commit DVC tracking files
+# run_data_pipeline.sh — Trigger Airflow DAG and auto-commit DVC tracking files
 # =============================================================================
-# Location: ENTITY-RESOLUTION/run_pipeline.sh
-# Usage:    ./run_pipeline.sh
+# Location: ENTITY-RESOLUTION/run_data_pipeline.sh
+# Usage:    ./run_data_pipeline.sh
 #
 # What this does:
-#   1. Triggers the Airflow DAG (er_data_pipeline)
+#   1. Triggers the Airflow DAG (airflow_data_pipeline)
 #   2. Waits for it to complete
 #   3. Commits any new/changed .dvc files to Git
 #   4. Optionally pushes to remote Git repo
@@ -17,7 +17,7 @@ set -euo pipefail
 # --- Config ---
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 PIPELINE_DIR="${REPO_ROOT}/Data-Pipeline"
-DAG_ID="er_data_pipeline"
+DAG_ID="airflow_data_pipeline"
 POLL_INTERVAL=30  # seconds between status checks
 
 # Colors for output
@@ -140,6 +140,6 @@ log "PIPELINE RUN COMPLETE"
 echo "=========================================="
 log "  Run ID:    ${RUN_ID}"
 log "  DAG:       ${DAG_ID}"
-log "  DVC Data:  gs://unifyml-dvc-storage"
+log "  DVC Data:  gs://entity-resolution-dvc-bucket"
 log "  Git:       $(git rev-parse --short HEAD)"
 echo "=========================================="
