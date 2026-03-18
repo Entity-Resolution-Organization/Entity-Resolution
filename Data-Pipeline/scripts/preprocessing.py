@@ -21,12 +21,6 @@ class DataNormalizer:
         # Remove extra whitespace
         name = re.sub(r"\s+", " ", str(name).strip())
 
-        # Title case (proper names)
-        name = name.title()
-
-        # Keep alphanumeric, spaces, hyphens, periods (FIXED: added 0-9)
-        name = re.sub(r"[^a-zA-Z0-9\s\-\.]", "", name)
-
         return name.strip()
 
     @staticmethod
@@ -39,17 +33,6 @@ class DataNormalizer:
 
         # Remove extra whitespace
         address = re.sub(r"\s+", " ", address)
-
-        # Standardize common abbreviations (word boundaries to avoid partial matches)
-        address = re.sub(r"\bSt\b\.?", "Street", address, flags=re.IGNORECASE)
-        address = re.sub(r"\bAve\b\.?", "Avenue", address, flags=re.IGNORECASE)
-        address = re.sub(r"\bBlvd\b\.?", "Boulevard", address, flags=re.IGNORECASE)
-        address = re.sub(r"\bRd\b\.?", "Road", address, flags=re.IGNORECASE)
-        address = re.sub(r"\bDr\b\.?", "Drive", address, flags=re.IGNORECASE)
-        address = re.sub(r"\bLn\b\.?", "Lane", address, flags=re.IGNORECASE)
-
-        # Title case
-        address = address.title()
 
         return address.strip()
 
@@ -99,27 +82,69 @@ class NameCorruptor:
     """Generate realistic name variants and corruptions."""
 
     NICKNAME_MAP = {
-        "Robert": ["Bob", "Rob", "Bobby"],
-        "William": ["Bill", "Will", "Billy"],
+        # Male names
+        "Robert": ["Rob", "Bobby", "Robbie"],
+        "William": ["Will", "Liam"],
         "James": ["Jim", "Jimmy", "Jamie"],
-        "Michael": ["Mike", "Mikey", "Mick"],
-        "Richard": ["Rick", "Dick", "Richie"],
+        "Michael": ["Mike", "Mikey"],
+        "Richard": ["Rick", "Richie", "Rich"],
         "Thomas": ["Tom", "Tommy"],
         "Charles": ["Charlie", "Chuck"],
-        "Elizabeth": ["Liz", "Beth", "Betty", "Eliza"],
+        "Joseph": ["Joe", "Joey"],
+        "Christopher": ["Chris"],
+        "Daniel": ["Dan", "Danny"],
+        "Matthew": ["Matt", "Matty"],
+        "Anthony": ["Tony"],
+        "David": ["Dave"],
+        "Andrew": ["Andy", "Drew"],
+        "Jonathan": ["Jon", "Johnny"],
+        "Nicholas": ["Nick", "Nicky"],
+        "Alexander": ["Alex"],
+        "Benjamin": ["Ben", "Benny"],
+        "Samuel": ["Sam", "Sammy"],
+        "Timothy": ["Tim", "Timmy"],
+        "Edward": ["Ed", "Eddie"],
+        "Lawrence": ["Larry"],
+        "Francis": ["Frank"],
+        "Frederick": ["Fred", "Freddy"],
+        "Gregory": ["Greg"],
+        "Raymond": ["Ray"],
+        "Patrick": ["Pat"],
+        "Kenneth": ["Ken", "Kenny"],
+
+        # Female names
+        "Elizabeth": ["Liz", "Beth", "Lizzie", "Eliza"],
         "Jennifer": ["Jen", "Jenny"],
         "Jessica": ["Jess", "Jessie"],
-        "Margaret": ["Maggie", "Meg", "Peggy"],
+        "Margaret": ["Maggie", "Meg"],
         "Katherine": ["Kate", "Kathy", "Katie"],
+        "Christine": ["Chris", "Christy"],
+        "Rebecca": ["Becky", "Becca"],
+        "Patricia": ["Pat", "Tricia"],
+        "Barbara": ["Barb"],
+        "Susan": ["Sue", "Susie"],
+        "Dorothy": ["Dot"],
+        "Deborah": ["Deb", "Debbie"],
+        "Michelle": ["Shelly"],
+        "Kimberly": ["Kim"],
+        "Stephanie": ["Steph"],
+        "Victoria": ["Vicky", "Tori"],
+        "Alexandra": ["Alex", "Alexa"],
+        "Samantha": ["Sam", "Sammy"],
+        "Abigail": ["Abby"],
+        "Emily": ["Em", "Emmy"],
+        "Amanda": ["Mandy"],
     }
 
     @staticmethod
     def apply_nickname(name: str) -> str:
         """Convert formal name to nickname."""
         parts = name.split()
-        if len(parts) > 0 and parts[0] in NameCorruptor.NICKNAME_MAP:
-            nicknames = NameCorruptor.NICKNAME_MAP[parts[0]]
-            parts[0] = random.choice(nicknames)
+        if len(parts) > 0:
+            first_name = parts[0].title()  # Normalize case before lookup
+            if first_name in NameCorruptor.NICKNAME_MAP:
+                nicknames = NameCorruptor.NICKNAME_MAP[first_name]
+                parts[0] = random.choice(nicknames)
         return " ".join(parts)
 
     @staticmethod
