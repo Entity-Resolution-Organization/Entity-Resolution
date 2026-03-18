@@ -74,7 +74,7 @@ class TestDataNormalizer:
 
     def test_normalize_name(self):
         """Test name normalization."""
-        assert DataNormalizer.normalize_name("john  smith") == "john smith"
+        assert DataNormalizer.normalize_name("john  smith") == "John Smith"
         assert DataNormalizer.normalize_name("JOHN SMITH") == "John Smith"
         assert DataNormalizer.normalize_name(None) == ""
 
