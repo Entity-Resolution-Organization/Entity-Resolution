@@ -21,6 +21,9 @@ class DataNormalizer:
         # Remove extra whitespace
         name = re.sub(r"\s+", " ", str(name).strip())
 
+        # Title case (proper names)
+        name = name.title()
+
         return name.strip()
 
     @staticmethod
@@ -33,6 +36,9 @@ class DataNormalizer:
 
         # Remove extra whitespace
         address = re.sub(r"\s+", " ", address)
+
+        # Title case
+        address = address.title()
 
         return address.strip()
 
