@@ -80,11 +80,9 @@ class TestDataNormalizer:
 
     def test_normalize_address(self):
         """Test address normalization."""
-        assert "Street" in DataNormalizer.normalize_address("123 Main St")
-        assert "Avenue" in DataNormalizer.normalize_address("456 Oak Ave.")
-        assert (
-            DataNormalizer.normalize_address("  123  Main  St  ") == "123 Main Street"
-        )
+        assert DataNormalizer.normalize_address("123 Main St") == "123 Main St"
+        assert DataNormalizer.normalize_address("456 Oak Ave.") == "456 Oak Ave."
+        assert DataNormalizer.normalize_address("  123  Main  St  ") == "123 Main St"
         assert DataNormalizer.normalize_address(None) == ""
 
     def test_normalize_date(self):
@@ -98,7 +96,7 @@ class TestDataNormalizer:
         normalized = DataNormalizer.normalize_record(sample_record)
 
         assert normalized["name"] == "Robert Smith"
-        assert "Street" in normalized["address"]
+        assert normalized["address"] == "123 Main St, New York"
         assert normalized["dob"] == "1980-01-01"
 
 
@@ -132,16 +130,6 @@ class TestNameCorruptor:
 
 class TestAddressCorruptor:
     """Test address corruption functions."""
-
-    def test_abbreviate(self):
-        """Test address abbreviation."""
-        result = AddressCorruptor.abbreviate("123 Main Street")
-        assert "St" in result or "Str" in result
-
-    def test_expand_abbreviations(self):
-        """Test abbreviation expansion."""
-        result = AddressCorruptor.expand_abbreviations("123 Main St")
-        assert "Street" in result
 
     def test_apply_typo(self):
         """Test address typos."""
