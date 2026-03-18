@@ -96,7 +96,7 @@ class TestDataNormalizer:
         normalized = DataNormalizer.normalize_record(sample_record)
 
         assert normalized["name"] == "Robert Smith"
-        assert normalized["address"] == "123 Main St"
+        assert normalized["address"] == "123 Main St, New York"
         assert normalized["dob"] == "1980-01-01"
 
 
