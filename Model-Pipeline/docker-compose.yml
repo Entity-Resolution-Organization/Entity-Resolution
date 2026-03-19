@@ -1,0 +1,93 @@
+version: "3.8"
+
+# =============================================================================
+# Entity Resolution — Model Pipeline
+# Services: mlflow, trainer, airflow
+# Port 8081 for Airflow
+# =============================================================================
+
+x-common-env: &common-env
+  CONFIG_PATH: config/training_config.yaml
+  MLFLOW_TRACKING_URI: http://mlflow:5000
+  GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp-key
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # MLflow tracking server
+  # Artifacts stored in GCS, metadata in local SQLite
+  # ---------------------------------------------------------------------------
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.11.0
+    command: >
+      mlflow server
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --default-artifact-root ${GCS_ARTIFACT_ROOT}
+      --host 0.0.0.0
+      --port 5000
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_data:/mlflow
+    env_file: .env
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Trainer  — runs train.py then exits
+  # Override CMD to run evaluate.py, bias_detection.py etc.
+  # ---------------------------------------------------------------------------
+  trainer:
+    build: .
+    depends_on:
+      - mlflow
+    environment:
+      <<: *common-env
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+      - ./cache:/app/cache
+      - ${GCP_KEY_PATH}:/run/secrets/gcp-key:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    env_file: .env
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Airflow  — orchestrates the pipeline
+  # ---------------------------------------------------------------------------
+  airflow:
+    image: apache/airflow:2.8.0-python3.10
+    depends_on:
+      - mlflow
+    environment:
+      <<: *common-env
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////airflow/airflow.db
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./scripts:/opt/airflow/scripts
+      - ./config:/opt/airflow/config
+      - ./models:/app/models
+      - ./data:/app/data
+      - airflow_data:/airflow
+      - ${GCP_KEY_PATH}:/run/secrets/gcp-key:ro
+    ports:
+      - "8081:8080"
+    command: >
+      bash -c "airflow db init &&
+               airflow users create --username admin --password admin
+                 --firstname admin --lastname admin --role Admin --email admin@local &&
+               airflow webserver & airflow scheduler"
+    env_file: .env
+    restart: unless-stopped
+
+volumes:
+  mlflow_data:
+  airflow_data:
