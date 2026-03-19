@@ -64,8 +64,8 @@ training:
 # Data  (used by both train.py and evaluate.py)
 # -----------------------------------------------------------------------------
 data:
-  gcs_bucket: "entity-resolution-487121-entity-resolution"
-  gcs_path: "training/2026-02-24"
+  gcs_bucket: "entity-resolution-bucket-1"
+  gcs_path: "training/2026-03-01"
   local_data_dir: "./data"
 
   # Entity types to train/evaluate — comment out types not yet ready
