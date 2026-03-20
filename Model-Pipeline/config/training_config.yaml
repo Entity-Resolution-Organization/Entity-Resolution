@@ -108,7 +108,7 @@ output:
 # Override tracking_uri at runtime via MLFLOW_TRACKING_URI env var if needed
 # -----------------------------------------------------------------------------
 mlflow:
-  tracking_uri: "http://localhost:5000"
+  tracking_uri: "http://mlflow:5000"
   experiment_name: "entity-resolution-deberta"
   run_name_prefix: "deberta_lora"
   artifact_path: "model"

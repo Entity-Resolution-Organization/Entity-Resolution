@@ -9,7 +9,6 @@ version: "3.8"
 x-common-env: &common-env
   CONFIG_PATH: config/training_config.yaml
   MLFLOW_TRACKING_URI: http://mlflow:5000
-  GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp-key
 
 services:
 
@@ -46,7 +45,6 @@ services:
       - ./models:/app/models
       - ./data:/app/data
       - ./cache:/app/cache
-      - ${GCP_KEY_PATH}:/run/secrets/gcp-key:ro
     deploy:
       resources:
         reservations:
@@ -77,7 +75,6 @@ services:
       - ./models:/app/models
       - ./data:/app/data
       - airflow_data:/airflow
-      - ${GCP_KEY_PATH}:/run/secrets/gcp-key:ro
     ports:
       - "8081:8080"
     command: >
@@ -90,4 +87,3 @@ services:
 
 volumes:
   mlflow_data:
-  airflow_data:
