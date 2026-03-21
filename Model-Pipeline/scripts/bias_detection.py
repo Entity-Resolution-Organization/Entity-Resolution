@@ -5,9 +5,6 @@ Loads test_predictions.csv from evaluate.py, slices by source_dataset
 and entity_type, computes per-slice metrics, checks F1 disparity threshold,
 and generates bias_report.json + plots.
 
-Config-driven — no CLI arguments:
-    CONFIG_PATH=config/training_config.yaml python scripts/bias_detection.py
-
 Outputs:
     models/{entity_type}/results/bias_report.json
     models/{entity_type}/plots/bias_f1_by_slice.png
@@ -203,12 +200,13 @@ class BiasDetector:
         """
         df = self.load_predictions()
 
-        # Apply threshold from config (same as evaluate.py)
+        # Always reapply threshold from config — CSV predicted_label
+        # may have been generated with a different threshold
         threshold = self.config["validation"]["classification_threshold"]
-        if "predicted_label" not in df.columns:
-            df["predicted_label"] = (
-                df["predicted_prob"] >= threshold
-            ).astype(int)
+        df["predicted_label"] = (
+            df["predicted_prob"] >= threshold
+        ).astype(int)
+        print(f"[Bias] Applied threshold={threshold} to predicted_prob")
 
         slice_cols  = self.bias_cfg["slices"]
         report      = {
@@ -239,24 +237,26 @@ class BiasDetector:
             report["slices"][slice_col]   = slices
             report["disparity"][slice_col] = disparity
 
+            max_f1_disparity = self.bias_cfg["max_f1_disparity"]
+
             if disparity["bias_detected"]:
                 report["bias_detected"] = True
                 report["mitigation_suggestions"].append(
                     f"F1 disparity of {disparity['f1_disparity']:.3f} across "
-                    f"{slice_col} exceeds threshold {disparity['threshold']}. "
+                    f"{slice_col} exceeds threshold {max_f1_disparity}. "
                     f"Consider re-sampling under-performing slices or adjusting "
                     f"per-slice decision thresholds."
                 )
                 print(
                     f"[Bias] BIAS DETECTED in {slice_col}: "
                     f"disparity={disparity['f1_disparity']:.3f} "
-                    f"> threshold={disparity['threshold']}"
+                    f"> threshold={max_f1_disparity}"
                 )
             else:
                 print(
                     f"[Bias] OK — {slice_col} disparity="
                     f"{disparity.get('f1_disparity', 0):.3f} "
-                    f"<= threshold={disparity['threshold']}"
+                    f"<= threshold={max_f1_disparity}"
                 )
 
             # Plots

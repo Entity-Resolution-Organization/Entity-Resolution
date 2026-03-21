@@ -131,14 +131,32 @@ class EntityResolutionEvaluator:
 
     def load_model_and_tokenizer(self):
         """
-        Load model + tokenizer.  Tries local final_model_dir first,
-        falls back to MLflow Model Registry.
+        Load LoRA fine-tuned model + tokenizer.
+        Loads base model first then applies saved LoRA adapters on top.
+        Falls back to MLflow Model Registry if local path not found.
         """
+        from peft import PeftModel
+
         if os.path.isdir(self.final_model_dir):
             print(f"[Model] Loading from local path: {self.final_model_dir}")
-            tokenizer = AutoTokenizer.from_pretrained(self.final_model_dir)
-            model     = AutoModelForSequenceClassification.from_pretrained(
-                self.final_model_dir
+
+            cache_dir = self.config["model"].get("cache_dir")
+
+            # Step 1 — load base model from HuggingFace (or cache)
+            base_model = AutoModelForSequenceClassification.from_pretrained(
+                self.config["model"]["base_model"],
+                num_labels=self.config["model"]["num_labels"],
+                cache_dir=cache_dir,
+            )
+
+            # Step 2 — apply saved LoRA adapters on top of base model
+            model = PeftModel.from_pretrained(base_model, self.final_model_dir)
+
+            # Step 3 — merge adapters into base weights for faster inference
+            model = model.merge_and_unload()
+
+            tokenizer = AutoTokenizer.from_pretrained(
+                self.final_model_dir, cache_dir=cache_dir
             )
         else:
             registered_name = self.config["mlflow"]["registered_model_name"].format(
@@ -147,7 +165,6 @@ class EntityResolutionEvaluator:
             model_uri = f"models:/{registered_name}/latest"
             print(f"[Model] Local path not found — loading from MLflow: {model_uri}")
             pyfunc_model = mlflow.pyfunc.load_model(model_uri)
-            # Unwrap to native transformers objects
             model     = pyfunc_model._model_impl.python_model.model
             tokenizer = pyfunc_model._model_impl.python_model.tokenizer
 
