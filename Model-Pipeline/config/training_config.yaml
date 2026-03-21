@@ -131,7 +131,7 @@ validation:
     - "auc"
 
   # Threshold used by evaluate.py inference loop to convert probs → labels
-  classification_threshold: 0.5
+  classification_threshold: 0.4
 
   # Quality gate thresholds — pipeline goes NO-GO if any are breached
   min_f1: 0.75
