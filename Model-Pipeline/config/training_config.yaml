@@ -187,6 +187,12 @@ gcp:
     repository: "ml-models"
     location: "us-central1"
     image_name: "er_{entity_type}_deberta"   # formatted at runtime
+    serving_base_image: "pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime"
+    serving_packages:
+      - "transformers==4.36.2"
+      - "peft==0.7.1"
+      - "accelerate==0.25.0"
+    tmp_build_dir: "/tmp/er_push"
 
 # -----------------------------------------------------------------------------
 # Notifications  (used by er_model_pipeline.py on NO-GO)
