@@ -122,20 +122,26 @@ class BiasDetector:
         Returns disparity info dict.
         """
         values = [s[metric] for s in slices.values() if s[metric] > 0]
+        threshold = self.bias_cfg[f"max_{metric}_disparity"]
+
         if len(values) < 2:
-            return {"bias_detected": False, "reason": "insufficient slices"}
+            return {
+                "bias_detected": False,
+                "reason":        "insufficient slices",
+                f"{metric}_disparity": 0.0,
+                "threshold":     float(threshold),
+            }
 
         max_val   = max(values)
         min_val   = min(values)
         disparity = max_val - min_val
-        threshold = self.bias_cfg[f"max_{metric}_disparity"]
 
         return {
-            "bias_detected":   disparity > threshold,
-            f"max_{metric}":   float(max_val),
-            f"min_{metric}":   float(min_val),
+            "bias_detected":       disparity > threshold,
+            f"max_{metric}":       float(max_val),
+            f"min_{metric}":       float(min_val),
             f"{metric}_disparity": float(disparity),
-            f"threshold":      float(threshold),
+            "threshold":           float(threshold),
         }
 
     # ------------------------------------------------------------------
