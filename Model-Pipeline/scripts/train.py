@@ -112,10 +112,7 @@ class EntityResolutionTrainer:
         for split in ["train", "val", "test"]:
             blob_path  = f"{gcs_path}/{self.entity_type}/{split}.csv"
             local_path = os.path.join(local_dir, f"{self.entity_type}_{split}.csv")
-            try:
-                bucket.blob(blob_path).download_to_filename(local_path)
-            except Exception as e:
-                raise RuntimeError(f"Failed to download {blob_path}: {e}")
+            bucket.blob(blob_path).download_to_filename(local_path)
             splits[split] = pd.read_csv(local_path)
             print(f"[Data]   {split}: {len(splits[split])} pairs")
 
@@ -469,7 +466,22 @@ class EntityResolutionTrainer:
 # Quality gate (checks validation thresholds from config)
 # ---------------------------------------------------------------------------
 
-def quality_gate(metrics: Dict, config: Dict) -> bool:
+def upload_model_to_gcs(local_dir: str, entity_type: str, config: Dict):
+    """Upload trained model weights to GCS so Vertex AI ephemeral VM doesn't lose them."""
+    from pathlib import Path
+    client      = storage.Client()
+    bucket_name = config["data"]["gcs_bucket"]
+    bucket      = client.bucket(bucket_name)
+    gcs_prefix  = f"models/{entity_type}/final_model"
+
+    for local_path in Path(local_dir).rglob("*"):
+        if local_path.is_file():
+            rel_path = local_path.relative_to(local_dir)
+            blob     = bucket.blob(f"{gcs_prefix}/{rel_path}")
+            blob.upload_from_filename(str(local_path))
+            print(f"[GCS] Uploaded: {rel_path}")
+
+    print(f"[GCS] Model uploaded to gs://{bucket_name}/{gcs_prefix}")
     """Return True (GO) if all validation thresholds are met."""
     thresholds = config["validation"]
     checks = {
@@ -541,6 +553,17 @@ def main():
 
             # Evaluate on test (same run — no nested start_run)
             test_results = trainer.evaluate_on_test(model, test_ds, test_df)
+
+            # Uploads model weights to GCS
+            final_model_dir = config["output"]["final_model_dir"].format(
+                base_dir=config["output"]["base_dir"],
+                model_dir=config["output"]["model_dir"].format(
+                    base_dir=config["output"]["base_dir"],
+                    entity_type=entity_type,
+                ),
+                entity_type=entity_type,
+            )
+            upload_model_to_gcs(final_model_dir, entity_type, config)
 
             # Quality gate
             go = quality_gate(test_results["metrics"], config)
