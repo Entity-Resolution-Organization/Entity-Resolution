@@ -195,7 +195,7 @@ gcp:
     tmp_build_dir: "/tmp/er_push"
 
 # -----------------------------------------------------------------------------
-# Notifications  (used by er_model_pipeline.py on NO-GO)
+# Notifications
 # -----------------------------------------------------------------------------
 notifications:
   enabled: false

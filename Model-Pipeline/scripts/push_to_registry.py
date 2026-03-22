@@ -4,6 +4,7 @@ Entity Resolution — Push Model to GCP Artifact Registry
 Packages the trained model as a Docker image and pushes it to GCP
 Artifact Registry for versioned deployment.
 
+What it does:
     1. Verifies trained model exists locally
     2. Checks quality gate passed (reads test_metrics.json)
     3. Determines next version from Artifact Registry
@@ -202,14 +203,14 @@ CMD ["python", "-c", "print('Model ready at', __import__(chr(111)+chr(115)).envi
         tmp_base = self.config["gcp"]["artifact_registry"].get("tmp_build_dir", "/tmp/er_push")
         tmp_dir  = f"{tmp_base}_{self.entity_type}"
         os.makedirs(tmp_dir, exist_ok=True)
-        model_link = os.path.join(tmp_dir, "final_model")
-
-        # Symlink model dir into build context
-        if os.path.lexists(model_link):
-            os.remove(model_link)
-        os.symlink(
+        # Copy model files into build context
+        import shutil
+        model_dest = os.path.join(tmp_dir, "final_model")
+        if os.path.exists(model_dest):
+            shutil.rmtree(model_dest)
+        shutil.copytree(
             os.path.abspath(self.final_model_dir),
-            model_link
+            model_dest
         )
 
         dockerfile_path = self.write_serving_dockerfile(tmp_dir)
