@@ -54,6 +54,7 @@ class NumpyEncoder(json.JSONEncoder):
 from airflow import DAG
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import BranchPythonOperator, PythonOperator
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 # Add scripts to path
 sys.path.insert(0, "/opt/airflow/scripts")
@@ -1144,6 +1145,15 @@ with DAG(
         trigger_rule="none_failed_min_one_success",
     )
 
+    # Trigger model pipeline after data pipeline completes successfully
+    trigger_model_pipeline = TriggerDagRunOperator(
+        task_id="trigger_model_pipeline",
+        trigger_dag_id="er_model_pipeline",
+        conf={"triggered_by": "er_data_pipeline"},
+        # Point to Model-Pipeline Airflow on port 8081
+        api_conn_id="model_airflow",
+    )
+
     (
         quality_gate_task
         >> dvc_track_task
@@ -1151,6 +1161,7 @@ with DAG(
         >> load_bq_task
         >> verify_task
         >> pipeline_complete
+        >> trigger_model_pipeline
     )
 
 

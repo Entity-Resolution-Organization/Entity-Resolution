@@ -12,6 +12,12 @@ Flow:
       → quality_gate                             (branch GO / NO-GO)
       → push_to_registry | alert
       → end
+
+Architecture:
+    - Training runs on Vertex AI (GPU, ephemeral VM)
+    - Post-training scripts run in er-trainer Docker container via DockerOperator
+    - All scripts read config from mounted volume, write results to mounted volume
+    - MLflow server runs on airflow-vm (always-on)
 """
 
 import json
@@ -21,16 +27,39 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import BranchPythonOperator, PythonOperator
+from airflow.providers.docker.operators.docker import DockerOperator
+from airflow.providers.google.cloud.operators.vertex_ai.custom_job import (
+    CreateCustomTrainingJobOperator,
+)
+from airflow.operators.bash import BashOperator
+from docker.types import Mount
 
-SCRIPTS_DIR = "/opt/airflow/scripts"
-CONFIG_PATH  = "/opt/airflow/config/training_config.yaml"
+# =============================================================================
+# Constants
+# =============================================================================
+
+PROJECT_ID   = os.environ.get("GCP_PROJECT_ID", "entity-resolution-487121")
+REGION       = os.environ.get("GCP_REGION", "us-central1")
+IMAGE        = os.environ.get(
+    "TRAINER_IMAGE",
+    f"{REGION}-docker.pkg.dev/{PROJECT_ID}/ml-models/er-trainer:latest",
+)
+CONFIG_PATH_HOST      = "/opt/airflow/config/training_config.yaml"
+CONFIG_DIR_HOST       = "/opt/airflow/config"
+MODELS_DIR_HOST       = "/opt/airflow/models"
+DATA_DIR_HOST         = "/opt/airflow/data"
+CACHE_DIR_HOST        = "/opt/airflow/cache"
+MLFLOW_URI            = os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5000")
+
+# Container paths (inside er-trainer image)
+CONFIG_PATH_CONTAINER = "/app/config/training_config.yaml"
 
 default_args = {
     "owner":             "entity-resolution",
     "start_date":        datetime(2026, 1, 1),
     "retries":           1,
     "retry_delay":       timedelta(minutes=5),
-    "execution_timeout": timedelta(hours=4),
+    "execution_timeout": timedelta(hours=6),
 }
 
 
@@ -38,57 +67,28 @@ default_args = {
 # Helpers
 # =============================================================================
 
-def _run_script(script: str, env_extra: dict = None, **context) -> str:
-    import subprocess
-    env = os.environ.copy()
-    env["CONFIG_PATH"] = CONFIG_PATH
-    if env_extra:
-        env.update(env_extra)
-    result = subprocess.run(
-        ["python", f"{SCRIPTS_DIR}/{script}"],
-        env=env, capture_output=True, text=True,
-    )
-    print(result.stdout)
-    if result.returncode != 0:
-        print(result.stderr)
-        raise RuntimeError(f"{script} failed — see logs above")
-    return result.stdout
-
-
 def _load_config():
     import yaml
-    with open(CONFIG_PATH) as f:
+    with open(CONFIG_PATH_HOST) as f:
         return yaml.safe_load(f)
 
 
-# =============================================================================
-# Task callables
-# =============================================================================
-
-def run_training(**context):
-    import re
-    stdout = _run_script("train.py", **context)
-    match  = re.search(r"\[MLflow\] Run ID: (\S+)", stdout)
-    if match:
-        context["task_instance"].xcom_push(
-            key="mlflow_run_id", value=match.group(1)
-        )
+def _docker_mounts():
+    """Shared volume mounts for all DockerOperator tasks."""
+    return [
+        Mount(target="/app/config",  source=CONFIG_DIR_HOST,  type="bind"),
+        Mount(target="/app/models",  source=MODELS_DIR_HOST,  type="bind"),
+        Mount(target="/app/data",    source=DATA_DIR_HOST,    type="bind"),
+        Mount(target="/app/cache",   source=CACHE_DIR_HOST,   type="bind"),
+    ]
 
 
-def run_evaluate(**context):
-    run_id = context["task_instance"].xcom_pull(
-        task_ids="train", key="mlflow_run_id"
-    )
-    extra = {"MLFLOW_RUN_ID": run_id} if run_id else {}
-    _run_script("evaluate.py", env_extra=extra, **context)
-
-
-def run_bias_detection(**context):
-    _run_script("bias_detection.py", **context)
-
-
-def run_sensitivity(**context):
-    _run_script("sensitivity_analysis.py", **context)
+def _docker_env():
+    """Shared environment variables for all DockerOperator tasks."""
+    return {
+        "CONFIG_PATH":          CONFIG_PATH_CONTAINER,
+        "MLFLOW_TRACKING_URI":  MLFLOW_URI,
+    }
 
 
 # =============================================================================
@@ -98,24 +98,26 @@ def run_sensitivity(**context):
 def check_rollback(**context) -> str:
     """
     Compare current F1 against best previous GO run in MLflow.
-    Checks ALL entity types before deciding — branches to
-    'quality_gate' (OK) or 'rollback' (any entity degraded > 2%).
+    Checks ALL entity types — branches to 'quality_gate' or 'rollback'.
     """
     import mlflow
 
     config       = _load_config()
     entity_types = config["data"]["entity_types"]
-    base_dir     = config["output"]["base_dir"]
+    base_dir     = MODELS_DIR_HOST
 
-    mlflow.set_tracking_uri(config["mlflow"]["tracking_uri"])
+    mlflow.set_tracking_uri(MLFLOW_URI)
 
     rollback_needed = False
 
     for entity_type in entity_types:
         metrics_path = f"{base_dir}/{entity_type}/results/test_metrics.json"
+        if not os.path.exists(metrics_path):
+            print(f"[Rollback] No metrics found for {entity_type} — skipping")
+            continue
+
         with open(metrics_path) as f:
             current_metrics = json.load(f)
-
         current_f1 = current_metrics.get("test_f1", 0)
 
         experiment = mlflow.get_experiment_by_name(
@@ -144,7 +146,7 @@ def check_rollback(**context) -> str:
 
         print(
             f"[Rollback] {entity_type}: "
-            f"current={current_f1:.4f} | previous best={best_f1:.4f} | "
+            f"current={current_f1:.4f} | best={best_f1:.4f} | "
             f"degradation={degradation:.4f}"
         )
 
@@ -165,7 +167,7 @@ def check_rollback(**context) -> str:
     if rollback_needed:
         return "rollback"
 
-    print("[Rollback] OK — all entity types passed, proceeding to quality gate")
+    print("[Rollback] OK — all entity types passed")
     return "quality_gate"
 
 
@@ -178,7 +180,7 @@ def perform_rollback(**context):
     gcp    = config["gcp"]
     ar     = gcp["artifact_registry"]
 
-    mlflow.set_tracking_uri(config["mlflow"]["tracking_uri"])
+    mlflow.set_tracking_uri(MLFLOW_URI)
     mlflow.set_experiment(config["mlflow"]["experiment_name"])
 
     for entity_type in config["data"]["entity_types"]:
@@ -188,9 +190,7 @@ def perform_rollback(**context):
             f"{gcp['project_id']}/{ar['repository']}/{image_name}"
         )
 
-        log_path = (
-            f"{config['output']['base_dir']}/{entity_type}/results/registry_log.json"
-        )
+        log_path = f"{MODELS_DIR_HOST}/{entity_type}/results/registry_log.json"
         previous = None
         if os.path.exists(log_path):
             with open(log_path) as f:
@@ -206,7 +206,7 @@ def perform_rollback(**context):
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
             print(result.stdout or result.stderr)
         else:
-            print(f"[Rollback] No previous version found for {entity_type}")
+            print(f"[Rollback] No previous version for {entity_type}")
 
         with mlflow.start_run(
             run_name=f"rollback_{entity_type}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
@@ -221,13 +221,11 @@ def perform_rollback(**context):
 # =============================================================================
 
 def check_quality_gate(**context) -> str:
-    config       = _load_config()
-    entity_types = config["data"]["entity_types"]
-    thresholds   = config["validation"]
-    base_dir     = config["output"]["base_dir"]
+    config     = _load_config()
+    thresholds = config["validation"]
 
-    for entity_type in entity_types:
-        metrics_path = f"{base_dir}/{entity_type}/results/test_metrics.json"
+    for entity_type in config["data"]["entity_types"]:
+        metrics_path = f"{MODELS_DIR_HOST}/{entity_type}/results/test_metrics.json"
         with open(metrics_path) as f:
             metrics = json.load(f)
 
@@ -251,7 +249,20 @@ def check_quality_gate(**context) -> str:
 # =============================================================================
 
 def run_push_to_registry(**context):
-    _run_script("push_to_registry.py", **context)
+    """Push runs on Airflow VM directly — needs gcloud which is on the VM."""
+    import subprocess
+    env = os.environ.copy()
+    env["CONFIG_PATH"]         = CONFIG_PATH_HOST
+    env["MLFLOW_TRACKING_URI"] = MLFLOW_URI
+
+    result = subprocess.run(
+        ["python", "/opt/airflow/scripts/push_to_registry.py"],
+        env=env, capture_output=True, text=True,
+    )
+    print(result.stdout)
+    if result.returncode != 0:
+        print(result.stderr)
+        raise RuntimeError("push_to_registry.py failed")
 
 
 def send_alert(**context):
@@ -267,7 +278,7 @@ def send_alert(**context):
                 f"(was {info['best_previous_f1']:.4f})"
             )
 
-    msg = f"[Pipeline] NO-GO: quality gate failed or rollback triggered.{extra}\nCheck MLflow."
+    msg = f"[Pipeline] NO-GO: quality gate failed or rollback triggered.{extra}\nCheck MLflow: {MLFLOW_URI}"
     print(msg)
 
     notif = config.get("notifications", {})
@@ -289,7 +300,7 @@ def send_alert(**context):
 with DAG(
     dag_id="er_model_pipeline",
     default_args=default_args,
-    description="ER model: train → evaluate → bias/sensitivity → rollback check → quality gate → registry",
+    description="ER model: Vertex AI train → Docker evaluate/bias → rollback → quality gate → registry",
     schedule=None,
     catchup=False,
     tags=["entity-resolution", "model-pipeline"],
@@ -297,24 +308,79 @@ with DAG(
 
     start = EmptyOperator(task_id="start")
 
-    train = PythonOperator(
+    # -------------------------------------------------------------------------
+    # Train — Vertex AI custom job
+    # CI/CD builds image → Airflow submits job → Vertex AI VM trains → shuts down
+    # Model weights uploaded to GCS by train.py automatically
+    # -------------------------------------------------------------------------
+    train = CreateCustomTrainingJobOperator(
         task_id="train",
-        python_callable=run_training,
+        project_id=PROJECT_ID,
+        region=REGION,
+        display_name="er-train-{{ ts_nodash }}",
+        worker_pool_specs=[
+            {
+                "machine_spec": {
+                    "machine_type":      "n1-standard-8",
+                    "accelerator_type":  "NVIDIA_TESLA_T4",
+                    "accelerator_count": 1,
+                },
+                "replica_count": 1,
+                "container_spec": {
+                    "image_uri": IMAGE,
+                    "env": [
+                        {"name": "CONFIG_PATH",         "value": CONFIG_PATH_CONTAINER},
+                        {"name": "MLFLOW_TRACKING_URI", "value": MLFLOW_URI},
+                    ],
+                },
+            }
+        ],
     )
 
-    evaluate = PythonOperator(
+    # -------------------------------------------------------------------------
+    # Evaluate — runs in er-trainer container via DockerOperator
+    # Downloads model weights from GCS (uploaded by train.py)
+    # -------------------------------------------------------------------------
+    evaluate = DockerOperator(
         task_id="evaluate",
-        python_callable=run_evaluate,
+        image=IMAGE,
+        command="python scripts/evaluate.py",
+        environment=_docker_env(),
+        mounts=_docker_mounts(),
+        docker_url="unix://var/run/docker.sock",
+        network_mode="host",     # reach MLflow on localhost:5000
+        auto_remove="success",
+        device_requests=[        # use GPU if available
+            {"capabilities": [["gpu"]], "count": -1}
+        ],
     )
 
-    bias = PythonOperator(
+    # -------------------------------------------------------------------------
+    # Bias detection — parallel with sensitivity, gates rollback_check
+    # -------------------------------------------------------------------------
+    bias = DockerOperator(
         task_id="bias_detection",
-        python_callable=run_bias_detection,
+        image=IMAGE,
+        command="python scripts/bias_detection.py",
+        environment=_docker_env(),
+        mounts=_docker_mounts(),
+        docker_url="unix://var/run/docker.sock",
+        network_mode="host",
+        auto_remove="success",
     )
 
-    sensitivity = PythonOperator(
+    # -------------------------------------------------------------------------
+    # Sensitivity — parallel, does NOT block rollback_check
+    # -------------------------------------------------------------------------
+    sensitivity = DockerOperator(
         task_id="sensitivity_analysis",
-        python_callable=run_sensitivity,
+        image=IMAGE,
+        command="python scripts/sensitivity_analysis.py",
+        environment=_docker_env(),
+        mounts=_docker_mounts(),
+        docker_url="unix://var/run/docker.sock",
+        network_mode="host",
+        auto_remove="success",
     )
 
     rollback_check = BranchPythonOperator(
@@ -332,9 +398,13 @@ with DAG(
         python_callable=check_quality_gate,
     )
 
-    push_to_registry = PythonOperator(
+    push_to_registry = BashOperator(
         task_id="push_to_registry",
-        python_callable=run_push_to_registry,
+        bash_command=(
+            f"CONFIG_PATH={CONFIG_PATH_HOST} "
+            f"MLFLOW_TRACKING_URI={MLFLOW_URI} "
+            "python /opt/airflow/scripts/push_to_registry.py"
+        ),
     )
 
     alert = PythonOperator(
@@ -348,10 +418,11 @@ with DAG(
         trigger_rule="none_failed_min_one_success",
     )
 
+    # -------------------------------------------------------------------------
     # Flow
-    # sensitivity runs in parallel but does NOT block rollback_check
+    # -------------------------------------------------------------------------
     start >> train >> evaluate >> bias >> rollback_check
-    evaluate >> sensitivity  # informational only — doesn't gate main flow
+    evaluate >> sensitivity   # parallel, informational only
     rollback_check >> rollback >> alert >> end
     rollback_check >> quality_gate
     quality_gate >> push_to_registry >> end

@@ -16,6 +16,8 @@ services:
   # ---------------------------------------------------------------------------
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.11.0
+    extra_hosts:
+      - "metadata.google.internal:169.254.169.254"
     command: >
       mlflow server
       --backend-store-uri sqlite:////mlflow/mlflow.db
@@ -35,6 +37,8 @@ services:
   # ---------------------------------------------------------------------------
   trainer:
     build: .
+    extra_hosts:
+      - "metadata.google.internal:169.254.169.254"
     depends_on:
       - mlflow
     environment:
@@ -60,6 +64,8 @@ services:
   # ---------------------------------------------------------------------------
   airflow:
     image: apache/airflow:2.8.0-python3.10
+    extra_hosts:
+      - "metadata.google.internal:169.254.169.254"
     depends_on:
       - mlflow
     environment:
@@ -72,13 +78,16 @@ services:
       - ./dags:/opt/airflow/dags
       - ./scripts:/opt/airflow/scripts
       - ./config:/opt/airflow/config
-      - ./models:/app/models
-      - ./data:/app/data
+      - ./models:/opt/airflow/models
+      - ./data:/opt/airflow/data
+      - ./cache:/opt/airflow/cache
       - airflow_data:/airflow
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8081:8080"
     command: >
-      bash -c "airflow db init &&
+      bash -c "pip install apache-airflow-providers-google apache-airflow-providers-docker &&
+               airflow db init &&
                airflow users create --username admin --password admin
                  --firstname admin --lastname admin --role Admin --email admin@local &&
                airflow webserver & airflow scheduler"
