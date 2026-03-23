@@ -7,6 +7,8 @@
 x-common-env: &common-env
   CONFIG_PATH: config/training_config.yaml
   MLFLOW_TRACKING_URI: http://mlflow:5000
+  GCP_PROJECT_ID: entity-resolution-487121
+  GCP_REGION: us-central1-a
 
 services:
 
@@ -72,7 +74,7 @@ services:
       <<: *common-env
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////airflow/airflow.db
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////home/airflow/airflow.db
       AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
     volumes:
       - ./dags:/opt/airflow/dags
@@ -81,13 +83,12 @@ services:
       - ./models:/opt/airflow/models
       - ./data:/opt/airflow/data
       - ./cache:/opt/airflow/cache
-      - airflow_data:/airflow
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8081:8080"
     command: >
       bash -c "pip install apache-airflow-providers-google apache-airflow-providers-docker &&
-               airflow db init &&
+               airflow migrate &&
                airflow users create --username admin --password admin
                  --firstname admin --lastname admin --role Admin --email admin@local &&
                airflow webserver & airflow scheduler"

@@ -29,7 +29,7 @@ from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import BranchPythonOperator, PythonOperator
 from airflow.providers.docker.operators.docker import DockerOperator
 from airflow.providers.google.cloud.operators.vertex_ai.custom_job import (
-    CreateCustomTrainingJobOperator,
+    CreateCustomContainerTrainingJobOperator,
 )
 from airflow.operators.bash import BashOperator
 from docker.types import Mount
@@ -248,21 +248,21 @@ def check_quality_gate(**context) -> str:
 # Push + alert
 # =============================================================================
 
-def run_push_to_registry(**context):
-    """Push runs on Airflow VM directly — needs gcloud which is on the VM."""
-    import subprocess
-    env = os.environ.copy()
-    env["CONFIG_PATH"]         = CONFIG_PATH_HOST
-    env["MLFLOW_TRACKING_URI"] = MLFLOW_URI
-
-    result = subprocess.run(
-        ["python", "/opt/airflow/scripts/push_to_registry.py"],
-        env=env, capture_output=True, text=True,
-    )
-    print(result.stdout)
-    if result.returncode != 0:
-        print(result.stderr)
-        raise RuntimeError("push_to_registry.py failed")
+# def run_push_to_registry(**context):
+#     """Push runs on Airflow VM directly — needs gcloud which is on the VM."""
+#     import subprocess
+#     env = os.environ.copy()
+#     env["CONFIG_PATH"]         = CONFIG_PATH_HOST
+#     env["MLFLOW_TRACKING_URI"] = MLFLOW_URI
+#
+#     result = subprocess.run(
+#         ["python", "/opt/airflow/scripts/push_to_registry.py"],
+#         env=env, capture_output=True, text=True,
+#     )
+#     print(result.stdout)
+#     if result.returncode != 0:
+#         print(result.stderr)
+#         raise RuntimeError("push_to_registry.py failed")
 
 
 def send_alert(**context):
@@ -313,28 +313,19 @@ with DAG(
     # CI/CD builds image → Airflow submits job → Vertex AI VM trains → shuts down
     # Model weights uploaded to GCS by train.py automatically
     # -------------------------------------------------------------------------
-    train = CreateCustomTrainingJobOperator(
+    train = CreateCustomContainerTrainingJobOperator(
         task_id="train",
         project_id=PROJECT_ID,
         region=REGION,
         display_name="er-train-{{ ts_nodash }}",
-        worker_pool_specs=[
-            {
-                "machine_spec": {
-                    "machine_type":      "n1-standard-8",
-                    "accelerator_type":  "NVIDIA_TESLA_T4",
-                    "accelerator_count": 1,
-                },
-                "replica_count": 1,
-                "container_spec": {
-                    "image_uri": IMAGE,
-                    "env": [
-                        {"name": "CONFIG_PATH",         "value": CONFIG_PATH_CONTAINER},
-                        {"name": "MLFLOW_TRACKING_URI", "value": MLFLOW_URI},
-                    ],
-                },
-            }
-        ],
+        container_uri=IMAGE,
+        machine_type="n1-standard-8",
+        accelerator_type="NVIDIA_TESLA_T4",
+        accelerator_count=1,
+        environment_variables={
+            "CONFIG_PATH":         CONFIG_PATH_CONTAINER,
+            "MLFLOW_TRACKING_URI": MLFLOW_URI,
+        },
     )
 
     # -------------------------------------------------------------------------
