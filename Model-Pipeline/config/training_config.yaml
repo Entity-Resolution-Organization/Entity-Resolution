@@ -1,0 +1,203 @@
+# =============================================================================
+# Entity Resolution — Model Pipeline Configuration
+# Used by: train.py, evaluate.py, bias_detection.py, sensitivity_analysis.py
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Model
+# -----------------------------------------------------------------------------
+model:
+  base_model: "microsoft/deberta-v3-base"
+  num_labels: 2
+  max_length: 256
+  cache_dir: "./cache"
+
+# -----------------------------------------------------------------------------
+# LoRA
+# -----------------------------------------------------------------------------
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.1
+  target_modules:
+    - "query_proj"
+    - "value_proj"
+  bias: "none"
+  task_type: "SEQ_CLS"
+
+# -----------------------------------------------------------------------------
+# Training  (used by train.py)
+# -----------------------------------------------------------------------------
+training:
+  batch_size: 16
+  learning_rate: 2.0e-5
+  num_epochs: 3
+  warmup_steps: 500
+  weight_decay: 0.01
+  gradient_accumulation_steps: 2
+
+  # Optimizer
+  optimizer: "adamw"
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_epsilon: 1.0e-8
+  max_grad_norm: 1.0
+
+  # LR scheduler
+  lr_scheduler_type: "linear"
+
+  # Checkpointing & evaluation
+  evaluation_strategy: "epoch"
+  save_strategy: "epoch"
+  load_best_model_at_end: true
+  metric_for_best_model: "f1"
+  greater_is_better: true
+  save_total_limit: 3
+  save_steps: 500
+
+  # Logging
+  logging_dir: "./logs"
+  logging_steps: 100
+  logging_first_step: false
+
+# -----------------------------------------------------------------------------
+# Data  (used by both train.py and evaluate.py)
+# -----------------------------------------------------------------------------
+data:
+  gcs_bucket: "entity-resolution-bucket-1"
+  gcs_path: "training/2026-03-01"
+  local_data_dir: "./data"
+
+  # Entity types to train/evaluate — comment out types not yet ready
+  entity_types:
+    - "person"
+    # - "product"
+    # - "publication"
+
+  # Split names (must match GCS filenames)
+  train_split: "train"
+  val_split: "val"
+  test_split: "test"
+
+  # Column names in CSV
+  columns:
+    id1: "id1"
+    id2: "id2"
+    name1: "name1"
+    name2: "name2"
+    address1: "address1"
+    address2: "address2"
+    label: "label"
+    entity_type: "entity_type"
+    source_dataset: "source_dataset"
+
+# -----------------------------------------------------------------------------
+# Output paths  (used by both train.py and evaluate.py)
+# Placeholders: {base_dir}, {entity_type}, {model_dir}
+# -----------------------------------------------------------------------------
+output:
+  base_dir: "./models"
+  model_dir: "{base_dir}/{entity_type}"
+  final_model_dir: "{model_dir}/final_model"
+  checkpoint_dir: "{model_dir}/checkpoints"
+  results_dir: "{model_dir}/results"
+  plots_dir: "{model_dir}/plots"
+
+# -----------------------------------------------------------------------------
+# MLflow  (used by both train.py and evaluate.py)
+# Override tracking_uri at runtime via MLFLOW_TRACKING_URI env var if needed
+# -----------------------------------------------------------------------------
+mlflow:
+  tracking_uri: "http://mlflow:5000"
+  experiment_name: "entity-resolution-deberta"
+  run_name_prefix: "deberta_lora"
+  artifact_path: "model"
+  registered_model_name: "er_{entity_type}_deberta"
+
+  tags:
+    project: "entity-resolution"
+    model_type: "deberta-v3-base"
+    method: "lora-fine-tuning"
+
+# -----------------------------------------------------------------------------
+# Validation  (used by train.py quality gate + evaluate.py quality gate)
+# -----------------------------------------------------------------------------
+validation:
+  metrics:
+    - "accuracy"
+    - "precision"
+    - "recall"
+    - "f1"
+    - "auc"
+
+  # Threshold used by evaluate.py inference loop to convert probs → labels
+  classification_threshold: 0.45
+
+  # Quality gate thresholds — pipeline goes NO-GO if any are breached
+  min_f1: 0.75
+  min_precision: 0.70
+  min_recall: 0.70
+  min_auc: 0.80
+
+# -----------------------------------------------------------------------------
+# Bias detection  (used by bias_detection.py)
+# -----------------------------------------------------------------------------
+bias_detection:
+  enabled: true
+  slices:
+    - "source_dataset"
+    - "entity_type"
+  max_f1_disparity: 0.15
+  max_precision_disparity: 0.15
+  max_recall_disparity: 0.15
+  min_slice_size: 100
+
+# -----------------------------------------------------------------------------
+# Sensitivity analysis  (used by sensitivity_analysis.py)
+# -----------------------------------------------------------------------------
+sensitivity:
+  enabled: true
+  methods:
+    - "shap"
+    - "feature_importance"
+  shap_samples: 100
+
+# -----------------------------------------------------------------------------
+# Device
+# -----------------------------------------------------------------------------
+device:
+  use_cuda: true
+  cuda_device: 0
+  fp16: false              # Set true for A100/V100 to speed up training
+  fp16_opt_level: "O1"
+
+# -----------------------------------------------------------------------------
+# Reproducibility
+# -----------------------------------------------------------------------------
+seed: 42
+
+# -----------------------------------------------------------------------------
+# GCP  (used by push_to_registry.py)
+# -----------------------------------------------------------------------------
+gcp:
+  project_id: "entity-resolution-487121"
+  region: "us-central1"
+  artifact_registry:
+    enabled: true
+    repository: "ml-models"
+    location: "us-central1"
+    image_name: "er_{entity_type}_deberta"   # formatted at runtime
+    serving_base_image: "pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime"
+    serving_packages:
+      - "transformers==4.36.2"
+      - "peft==0.7.1"
+      - "accelerate==0.25.0"
+    tmp_build_dir: "/tmp/er_push"
+
+# -----------------------------------------------------------------------------
+# Notifications
+# -----------------------------------------------------------------------------
+notifications:
+  enabled: false
+  slack_webhook_url: null
+  email_recipients: []
