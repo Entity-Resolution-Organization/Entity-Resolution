@@ -49,7 +49,8 @@ CONFIG_DIR_HOST       = "/opt/airflow/config"
 MODELS_DIR_HOST       = "/opt/airflow/models"
 DATA_DIR_HOST         = "/opt/airflow/data"
 CACHE_DIR_HOST        = "/opt/airflow/cache"
-MLFLOW_URI            = os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5000")
+MLFLOW_URI            = os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+MLFLOW_URI_VERTEX     = "http://34.134.75.193:5000"
 
 # Container paths (inside er-trainer image)
 CONFIG_PATH_CONTAINER = "/app/config/training_config.yaml"
@@ -317,14 +318,16 @@ with DAG(
         task_id="train",
         project_id=PROJECT_ID,
         region=REGION,
-        display_name="er-train-{{ ts_nodash }}",
+        display_name="er-train-custom-job",
         container_uri=IMAGE,
+        staging_bucket="gs://entity-resolution-staging-bucket",
         machine_type="n1-standard-8",
         accelerator_type="NVIDIA_TESLA_T4",
         accelerator_count=1,
-        environment_variables={
-            "CONFIG_PATH":         CONFIG_PATH_CONTAINER,
-            "MLFLOW_TRACKING_URI": MLFLOW_URI,
+        replica_count=1,
+        environment_variables = {
+            "CONFIG_PATH": CONFIG_PATH_CONTAINER,
+            "MLFLOW_TRACKING_URI": MLFLOW_URI_VERTEX,
         },
     )
 

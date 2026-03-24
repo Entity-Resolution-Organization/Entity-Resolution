@@ -8,7 +8,7 @@ x-common-env: &common-env
   CONFIG_PATH: config/training_config.yaml
   MLFLOW_TRACKING_URI: http://mlflow:5000
   GCP_PROJECT_ID: entity-resolution-487121
-  GCP_REGION: us-central1-a
+  GCP_REGION: us-central1
 
 services:
 
@@ -72,10 +72,16 @@ services:
       - mlflow
     environment:
       <<: *common-env
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__EXECUTOR: SequentialExecutor
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////home/airflow/airflow.db
       AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
+      GCP_PROJECT_ID: entity-resolution-487121
+      GCP_REGION: us-central1
+      _AIRFLOW_DB_UPGRADE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin
     volumes:
       - ./dags:/opt/airflow/dags
       - ./scripts:/opt/airflow/scripts
@@ -87,11 +93,7 @@ services:
     ports:
       - "8081:8080"
     command: >
-      bash -c "pip install apache-airflow-providers-google apache-airflow-providers-docker &&
-               airflow migrate &&
-               airflow users create --username admin --password admin
-                 --firstname admin --lastname admin --role Admin --email admin@local &&
-               airflow webserver & airflow scheduler"
+      bash -c "pip install apache-airflow-providers-google apache-airflow-providers-docker && airflow migrate && airflow users create --username admin --password admin --firstname admin --lastname admin --role Admin --email admin@local && airflow webserver & airflow scheduler"
     env_file: .env
     restart: unless-stopped
 
