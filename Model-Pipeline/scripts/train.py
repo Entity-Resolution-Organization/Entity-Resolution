@@ -333,7 +333,7 @@ class EntityResolutionTrainer:
                 "tokenizer": self.tokenizer,
             },
             artifact_path    = self.config["mlflow"]["artifact_path"],
-            registered_model_name = registered_name,
+            #registered_model_name = registered_name,
         )
         print(f"[Training] Registered as: {registered_name}")
 
