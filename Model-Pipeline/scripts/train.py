@@ -519,7 +519,9 @@ def main():
     print("=" * 70)
 
     # Set up MLflow (once, outside per-entity runs)
-    mlflow.set_tracking_uri(config["mlflow"]["tracking_uri"])
+    mlflow.set_tracking_uri(
+        os.environ.get("MLFLOW_TRACKING_URI") or config["mlflow"]["tracking_uri"]
+    )
     mlflow.set_experiment(config["mlflow"]["experiment_name"])
 
     results = {}
