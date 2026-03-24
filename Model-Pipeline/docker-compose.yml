@@ -93,10 +93,9 @@ services:
     ports:
       - "8081:8080"
     command: >
-      bash -c "pip install apache-airflow-providers-google apache-airflow-providers-docker && airflow migrate && airflow users create --username admin --password admin --firstname admin --lastname admin --role Admin --email admin@local && airflow webserver & airflow scheduler"
+      bash -c "pip install apache-airflow-providers-google apache-airflow-providers-docker && airflow standalone"
     env_file: .env
     restart: unless-stopped
 
 volumes:
   mlflow_data:
-  airflow_data:
