@@ -102,7 +102,7 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
-    needs: [lint, validate-config, test]
+    needs: [lint, validate-config]
     defaults:
       run:
         working-directory: Model-Pipeline
@@ -147,7 +147,7 @@ jobs:
   build:
     name: Build and push trainer image
     runs-on: ubuntu-latest
-    needs: [lint, validate-config]
+    needs: [lint, validate-config, test]
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     outputs:
       image_tag: ${{ steps.tag.outputs.tag }}
