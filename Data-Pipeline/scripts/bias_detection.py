@@ -1,16 +1,14 @@
-#!/usr/bin/env python3
 """
-Bias Detection Module for Entity Resolution Data Pipeline
+Bias Detection Module for Entity Resolution Data Pipeline.
 
-Detects various biases in entity resolution datasets:
+Detects various biases in PERSON entity resolution datasets:
 - Entity type distribution bias
 - Language/character set bias
 - Geographic bias
 - Match label distribution bias
-- Data source bias
+- Data source bias (synthetic vs real)
 
-Usage:
-    python scripts/bias_detection.py --accounts data/processed/accounts.csv --pairs data/processed/pairs.csv
+Used by the DAG's bias_detection task and the quality gate.
 """
 
 import json
@@ -39,7 +37,7 @@ class BiasDetector:
         self, df: pd.DataFrame, type_col: str = "entity_type"
     ) -> Dict[str, Any]:
         """
-        Check if entity types (person/product/company) are balanced.
+        Check if entity types are balanced.
 
         Bias threshold: >30% imbalance between most and least common type.
         """
@@ -47,10 +45,6 @@ class BiasDetector:
             return {"status": "skipped", "reason": "Empty dataframe"}
 
         if type_col not in df.columns:
-            # Try to infer entity type from data patterns
-            inferred = self._infer_entity_types(df)
-            if inferred:
-                return inferred
             return {
                 "status": "skipped",
                 "reason": f"No {type_col} column found",
@@ -85,59 +79,6 @@ class BiasDetector:
             ),
         }
 
-    def _infer_entity_types(self, df: pd.DataFrame) -> Optional[Dict]:
-        """Attempt to infer entity types from data patterns."""
-        if "name" not in df.columns or len(df) == 0:
-            return None
-
-        # Simple heuristics for entity type inference
-        def classify_name(name):
-            if pd.isna(name):
-                return "unknown"
-            name_str = str(name).lower()
-
-            # Company indicators
-            company_patterns = [
-                "inc",
-                "llc",
-                "ltd",
-                "corp",
-                "company",
-                "co.",
-                "gmbh",
-                "ag",
-            ]
-            if any(p in name_str for p in company_patterns):
-                return "company"
-
-            # Product indicators (has numbers, technical terms)
-            if re.search(r"\d+\s*(gb|mb|inch|mm|kg|lb)", name_str):
-                return "product"
-
-            # Default to person
-            return "person"
-
-        inferred_types = df["name"].apply(classify_name)
-        distribution = inferred_types.value_counts(normalize=True)
-
-        if len(distribution) == 0:
-            return None
-
-        imbalance = (
-            (distribution.max() - distribution.min()) if len(distribution) > 1 else 0.0
-        )
-
-        return {
-            "status": "inferred",
-            "distribution": distribution.to_dict(),
-            "inference_method": "name_pattern_matching",
-            "most_common": str(distribution.idxmax()),
-            "is_balanced": bool(imbalance < 0.3),
-            "has_entity_type_bias": bool(imbalance >= 0.3),
-            "severity": "LOW",
-            "recommendation": "Add explicit entity_type column for accurate tracking",
-        }
-
     def analyze_language_bias(
         self, df: pd.DataFrame, name_col: str = "name"
     ) -> Dict[str, Any]:
@@ -157,15 +98,12 @@ class BiasDetector:
 
             text = str(text)
 
-            # Check for various scripts
             has_cjk = bool(
                 re.search(r"[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]", text)
             )
             has_arabic = bool(re.search(r"[\u0600-\u06ff]", text))
             has_cyrillic = bool(re.search(r"[\u0400-\u04ff]", text))
-            has_latin_extended = bool(
-                re.search(r"[\u00c0-\u024f]", text)
-            )  # Accented chars
+            has_latin_extended = bool(re.search(r"[\u00c0-\u024f]", text))
 
             if has_cjk:
                 return "cjk"
@@ -201,7 +139,7 @@ class BiasDetector:
                 else "MEDIUM" if non_ascii_pct < 5 else "LOW"
             ),
             "recommendation": (
-                "Add multi-lingual datasets (OFAC international, Rakuten Japan, EU company registers)"
+                "Add datasets with international names (e.g. OFAC international sanctions entries)"
                 if non_ascii_pct < 5
                 else "Language diversity is acceptable"
             ),
@@ -218,7 +156,6 @@ class BiasDetector:
         if address_col not in df.columns:
             return {"status": "skipped", "reason": f"No {address_col} column found"}
 
-        # US state abbreviations and patterns
         us_states = [
             "AL",
             "AK",
@@ -280,20 +217,17 @@ class BiasDetector:
 
             addr_upper = str(addr).upper()
 
-            # Check for explicit US patterns
             if any(p.upper() in addr_upper for p in us_patterns):
                 return "US"
 
-            # Check for US state abbreviations (with word boundary)
             for state in us_states:
                 if re.search(rf"\b{state}\b", addr_upper):
                     return "US"
 
-            # Check for other country indicators
             intl_patterns = {
                 "UK": ["UK", "UNITED KINGDOM", "ENGLAND", "SCOTLAND", "WALES"],
                 "Canada": ["CANADA", "ONTARIO", "QUEBEC", "BC", "ALBERTA"],
-                "Germany": ["GERMANY", "DEUTSCHLAND", "GMBH"],
+                "Germany": ["GERMANY", "DEUTSCHLAND"],
                 "China": ["CHINA", "BEIJING", "SHANGHAI", "HONG KONG"],
                 "Japan": ["JAPAN", "TOKYO", "OSAKA"],
                 "Other": ["FRANCE", "SPAIN", "ITALY", "AUSTRALIA", "INDIA", "BRAZIL"],
@@ -303,7 +237,6 @@ class BiasDetector:
                 if any(p in addr_upper for p in patterns):
                     return region if region != "Other" else "International"
 
-            # Default to unknown/other
             return "other"
 
         region_distribution = df[address_col].apply(classify_address_region)
@@ -323,7 +256,7 @@ class BiasDetector:
             "has_geographic_bias": bool(us_pct > 80.0),
             "severity": "HIGH" if us_pct > 95 else "MEDIUM" if us_pct > 80 else "LOW",
             "recommendation": (
-                "Add international datasets (GLEIF global companies, OpenAddresses international)"
+                "Add international person datasets (e.g. international voter registries, OFAC non-US entries)"
                 if us_pct > 80
                 else "Geographic diversity is acceptable"
             ),
@@ -350,7 +283,6 @@ class BiasDetector:
         positive_pct = positive_count / total * 100
         negative_pct = negative_count / total * 100
 
-        # Deviation from perfect 50/50 balance
         imbalance = abs(positive_pct - 50)
 
         return {
@@ -383,7 +315,6 @@ class BiasDetector:
         if id_col not in df.columns:
             return {"status": "skipped", "reason": f"No {id_col} column found"}
 
-        # Detect synthetic data markers in IDs
         synthetic_markers = ["_var", "_syn", "fake", "test", "synthetic", "generated"]
 
         def is_synthetic(record_id):
@@ -410,14 +341,14 @@ class BiasDetector:
                 else "MEDIUM" if synthetic_pct > 70 else "LOW"
             ),
             "recommendation": (
-                "Incorporate more real-world datasets (NC Voters, OFAC SDN, WDC Products)"
+                "Incorporate more real-world person datasets to reduce synthetic data dominance"
                 if synthetic_pct > 70
                 else "Source balance is acceptable"
             ),
         }
 
     def generate_bias_report(
-        self, accounts_df: pd.DataFrame, pairs_df: pd.DataFrame = None
+        self, accounts_df: pd.DataFrame, pairs_df: Optional[pd.DataFrame] = None
     ) -> Dict[str, Any]:
         """
         Generate comprehensive bias analysis report.
@@ -438,7 +369,6 @@ class BiasDetector:
             "analyses": {},
         }
 
-        # Run all bias analyses
         report["analyses"]["entity_type_bias"] = self.analyze_entity_type_distribution(
             accounts_df
         )
@@ -450,7 +380,6 @@ class BiasDetector:
             accounts_df
         )
 
-        # Analyze pairs if provided
         if pairs_df is not None and len(pairs_df) > 0:
             logger.info(f"[Bias Detection] Analyzing {len(pairs_df)} entity pairs")
             report["analyses"]["match_label_bias"] = (
@@ -484,7 +413,7 @@ class BiasDetector:
             ),
         }
 
-        # Save report to JSON
+        # Save report
         output_path = self.output_dir / "bias_report.json"
         with open(output_path, "w") as f:
             json.dump(report, f, indent=2, default=str)
@@ -495,130 +424,3 @@ class BiasDetector:
         )
 
         return report
-
-    def print_summary(self, report: Dict[str, Any]) -> None:
-        """Print human-readable bias summary to console."""
-        print("\n" + "=" * 70)
-        print("                    BIAS DETECTION REPORT")
-        print("=" * 70)
-        print(f"Timestamp: {report['timestamp']}")
-        print(
-            f"Records analyzed: {report['total_accounts']} accounts, {report['total_pairs']} pairs"
-        )
-        print("-" * 70)
-
-        for analysis_name, results in report["analyses"].items():
-            if not isinstance(results, dict):
-                continue
-
-            # Determine status icon
-            if results.get("status") == "skipped":
-                icon = "⏭️ "
-                status = "SKIPPED"
-            elif results.get("severity") == "HIGH":
-                icon = "🔴"
-                status = "HIGH RISK"
-            elif results.get("severity") == "MEDIUM":
-                icon = "🟡"
-                status = "MEDIUM RISK"
-            else:
-                icon = "🟢"
-                status = "LOW RISK"
-
-            display_name = analysis_name.replace("_", " ").title()
-            print(f"\n{icon} {display_name}: {status}")
-
-            # Print key metrics based on analysis type
-            if "non_ascii_percentage" in results:
-                print(f"   Non-ASCII names: {results['non_ascii_percentage']:.1f}%")
-            if "us_percentage" in results:
-                print(f"   US addresses: {results['us_percentage']:.1f}%")
-            if "positive_percentage" in results:
-                print(
-                    f"   Label split: {results['positive_percentage']:.0f}% pos / {results['negative_percentage']:.0f}% neg"
-                )
-            if "synthetic_percentage" in results:
-                print(f"   Synthetic data: {results['synthetic_percentage']:.1f}%")
-
-            if "recommendation" in results and results.get("severity") in [
-                "HIGH",
-                "MEDIUM",
-            ]:
-                print(f"   Recommendation: {results['recommendation']}")
-
-        print("\n" + "-" * 70)
-        summary = report["summary"]
-        risk_icon = (
-            "🔴"
-            if summary["overall_bias_risk"] == "HIGH"
-            else "🟡" if summary["overall_bias_risk"] == "MEDIUM" else "🟢"
-        )
-        print(f"OVERALL BIAS RISK: {risk_icon} {summary['overall_bias_risk']}")
-        print(
-            f"Issues found: {summary['total_issues']} ({summary['high_risk_count']} high, {summary['medium_risk_count']} medium)"
-        )
-
-        if summary["bias_issues"]:
-            print(f"Affected areas: {', '.join(summary['bias_issues'])}")
-
-        print("=" * 70 + "\n")
-
-
-def main():
-    """Run bias detection from command line."""
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description="Detect bias in entity resolution data",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python scripts/bias_detection.py
-  python scripts/bias_detection.py --accounts data/processed/accounts.csv
-  python scripts/bias_detection.py --accounts data.csv --pairs pairs.csv --output reports/
-        """,
-    )
-    parser.add_argument(
-        "--accounts",
-        default="data/processed/pseudopeople_accounts.csv",
-        help="Path to accounts CSV file",
-    )
-    parser.add_argument(
-        "--pairs",
-        default="data/processed/pseudopeople_pairs.csv",
-        help="Path to pairs CSV file",
-    )
-    parser.add_argument(
-        "--output", default="data/metrics", help="Output directory for reports"
-    )
-
-    args = parser.parse_args()
-
-    # Load accounts data
-    accounts_path = Path(args.accounts)
-    if not accounts_path.exists():
-        logger.error(f"Accounts file not found: {accounts_path}")
-        return None
-
-    logger.info(f"Loading accounts from {accounts_path}")
-    accounts_df = pd.read_csv(accounts_path)
-
-    # Load pairs data (optional)
-    pairs_df = None
-    pairs_path = Path(args.pairs)
-    if pairs_path.exists():
-        logger.info(f"Loading pairs from {pairs_path}")
-        pairs_df = pd.read_csv(pairs_path)
-    else:
-        logger.warning(f"Pairs file not found: {pairs_path} - skipping pair analysis")
-
-    # Run bias detection
-    detector = BiasDetector(output_dir=args.output)
-    report = detector.generate_bias_report(accounts_df, pairs_df)
-    detector.print_summary(report)
-
-    return report
-
-
-if __name__ == "__main__":
-    main()
