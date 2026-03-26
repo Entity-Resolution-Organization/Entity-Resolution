@@ -28,7 +28,6 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 import yaml
-
 from airflow import DAG
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import PythonOperator
@@ -37,11 +36,8 @@ from airflow.operators.python import PythonOperator
 sys.path.insert(0, "/opt/airflow/scripts")
 
 from bias_detection import BiasDetector  # noqa: E402
-from data_validation import (  # noqa: E402
-    DatasetValidator,
-    QualityGate,
-    TrainingSplitValidator,
-)
+from data_validation import (DatasetValidator, QualityGate,  # noqa: E402
+                             TrainingSplitValidator)
 from dataset_factory import get_dataset_handler  # noqa: E402
 from preprocessing import preprocess_dataset  # noqa: E402
 from schema_validation import SchemaValidator  # noqa: E402

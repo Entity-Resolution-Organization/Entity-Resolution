@@ -14,7 +14,8 @@ import pytest
 
 sys.path.insert(0, "./scripts")
 
-from data_validation import DatasetValidator, QualityGate, TrainingSplitValidator
+from data_validation import (DatasetValidator, QualityGate,
+                             TrainingSplitValidator)
 
 
 # =============================================================================
@@ -43,7 +44,10 @@ class TestDatasetValidator:
 
     def test_valid_dataset_passes(self, validator, valid_csv):
         result = validator.validate_raw_dataset(
-            dataset_name="test", data_path=valid_csv, entity_type="PERSON"
+            dataset_name="test",
+            data_path=valid_csv,
+            entity_type="PERSON",
+            min_records=5,
         )
         assert result["success"] is True
         assert len(result["critical_failures"]) == 0
@@ -121,7 +125,10 @@ class TestDatasetValidator:
 
     def test_statistics_included(self, validator, valid_csv):
         result = validator.validate_raw_dataset(
-            dataset_name="test", data_path=valid_csv, entity_type="PERSON"
+            dataset_name="test",
+            data_path=valid_csv,
+            entity_type="PERSON",
+            min_records=5,
         )
         assert "statistics" in result
         assert result["statistics"]["total_records"] == 5
