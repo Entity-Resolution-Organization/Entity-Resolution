@@ -10,8 +10,14 @@ import pytest
 
 sys.path.insert(0, "./scripts")
 
-from preprocessing import (AddressCorruptor, DataCorruptor, DataNormalizer,
-                           NameCorruptor, PairGenerator, preprocess_dataset)
+from preprocessing import (
+    AddressCorruptor,
+    DataCorruptor,
+    DataNormalizer,
+    NameCorruptor,
+    PairGenerator,
+    preprocess_dataset,
+)
 
 
 @pytest.fixture

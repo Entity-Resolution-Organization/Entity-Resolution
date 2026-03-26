@@ -14,8 +14,7 @@ import pytest
 
 sys.path.insert(0, "./scripts")
 
-from data_validation import (DatasetValidator, QualityGate,
-                             TrainingSplitValidator)
+from data_validation import DatasetValidator, QualityGate, TrainingSplitValidator
 
 
 # =============================================================================

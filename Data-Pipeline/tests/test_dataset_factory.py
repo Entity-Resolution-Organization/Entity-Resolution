@@ -10,8 +10,12 @@ import pytest
 
 sys.path.insert(0, "./scripts")
 
-from dataset_factory import (NCVotersHandler, OFACHandler, PseudopeopleHandler,
-                             get_dataset_handler)
+from dataset_factory import (
+    NCVotersHandler,
+    OFACHandler,
+    PseudopeopleHandler,
+    get_dataset_handler,
+)
 
 
 @pytest.fixture
