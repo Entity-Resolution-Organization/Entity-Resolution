@@ -1,10 +1,22 @@
+"""
+Dataset Factory for Entity Resolution Pipeline.
+
+Provides dataset handlers for downloading, generating, and normalizing
+PERSON entity data from multiple sources.
+
+Each handler implements:
+- download(): Fetch real data (production) or generate synthetic (local)
+- normalize_schema(): Map source columns to standard schema (id, name, address, dob)
+- subsample(): Reduce to target size if source data exceeds target_records
+"""
+
 import io
 import logging
 import os
+import random
 import time
 from abc import ABC, abstractmethod
 from typing import Dict
-
 import pandas as pd
 import requests
 
@@ -18,7 +30,6 @@ class DatasetHandler(ABC):
     def __init__(self, config: Dict):
         self.config = config
         self.name = config["name"]
-        self.schema = config["schema"]
         self.is_production = os.getenv("ENVIRONMENT", "local") == "production"
 
     @abstractmethod
@@ -28,11 +39,11 @@ class DatasetHandler(ABC):
 
     @abstractmethod
     def normalize_schema(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Map dataset columns to standard schema."""
+        """Map dataset columns to standard schema: id, name, address, dob."""
         pass
 
     def subsample(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Subsample to target record count if needed."""
+        """Subsample to target record count if source data exceeds it."""
         target = self.config["target_records"]
         if len(df) > target:
             logger.info(f"Subsampling from {len(df)} to {target} records")
@@ -59,23 +70,32 @@ class DatasetHandler(ABC):
 
 
 class PseudopeopleHandler(DatasetHandler):
-    """Handler for Pseudopeople synthetic population data."""
+    """
+    Handler for Pseudopeople synthetic population data.
+
+    Production: Downloads pre-generated data from GCS bucket.
+    Local: Generates synthetic person records for testing.
+    """
 
     def download(self) -> pd.DataFrame:
         """Download or generate Pseudopeople data."""
         if self.is_production:
             return self._download_production()
-        else:
-            return self._generate_test_data()
+        return self._generate_test_data()
 
     def _download_production(self) -> pd.DataFrame:
-        """Download from GCS or generate using Pseudopeople library."""
+        """Download pre-generated data from GCS bucket."""
         try:
-            # Option 1: Download from GCS bucket
             from google.cloud import storage
 
+            bucket_name = os.getenv("GCS_BUCKET", "")
+            if not bucket_name:
+                logger.warning(
+                    "[Pseudopeople] GCS_BUCKET not set, falling back to test data"
+                )
+                return self._generate_test_data()
+
             client = storage.Client()
-            bucket_name = os.getenv("GCS_BUCKET", "your-gcs-bucket")
             bucket = client.bucket(bucket_name)
             blob = bucket.blob("raw/pseudopeople.csv")
 
@@ -83,7 +103,6 @@ class PseudopeopleHandler(DatasetHandler):
                 f"[Pseudopeople] Downloading from gs://{bucket_name}/raw/pseudopeople.csv"
             )
 
-            # Download to temp file
             temp_path = "/tmp/pseudopeople.csv"
             blob.download_to_filename(temp_path)
             df = pd.read_csv(temp_path)
@@ -97,9 +116,7 @@ class PseudopeopleHandler(DatasetHandler):
             return self._generate_test_data()
 
     def _generate_test_data(self) -> pd.DataFrame:
-        """Generate synthetic data for local testing."""
-        import random
-
+        """Generate synthetic person data for local testing."""
         base_count = self.config["base_records"]
         logger.info(f"[Pseudopeople] Generating {base_count} test records")
 
@@ -153,46 +170,57 @@ class PseudopeopleHandler(DatasetHandler):
                 f"{random.randint(1950, 2000)}-{random.randint(1, 12):02d}-{random.randint(1, 28):02d}"
                 for _ in range(base_count)
             ],
-            "ssn": [
-                f"{random.randint(100, 999)}-{random.randint(10, 99)}-{random.randint(1000, 9999)}"
-                for _ in range(base_count)
-            ],
         }
 
         return pd.DataFrame(data)
 
     def normalize_schema(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Map to standard schema."""
-        df_normalized = df.rename(
+        """Map to standard schema: id, name, address, dob."""
+        df_normalized = df.copy()
+
+        # Combine first + last name if separate columns exist
+        if "first_name" in df.columns and "last_name" in df.columns:
+            df_normalized["name"] = df["first_name"] + " " + df["last_name"]
+        elif "name" not in df.columns:
+            raise ValueError(
+                "[Pseudopeople] Cannot construct 'name' column from available data"
+            )
+
+        df_normalized = df_normalized.rename(
             columns={
                 "person_id": "id",
-                "first_name": "name",
                 "street_address": "address",
                 "date_of_birth": "dob",
             }
         )
 
-        # Combine first + last name if separate
-        if "last_name" in df.columns:
-            df_normalized["name"] = df["first_name"] + " " + df["last_name"]
-
         return df_normalized[["id", "name", "address", "dob"]]
 
 
 class NCVotersHandler(DatasetHandler):
-    """Handler for NC Voters registry data."""
+    """
+    Handler for NC Voters registry data.
+
+    Production: Downloads from Leipzig benchmark dataset.
+    Local: Generates synthetic NC voter records for testing.
+    """
+
+    # Direct download URL for the Leipzig NC Voters benchmark CSV
+    DOWNLOAD_URL = (
+        "https://pages.cs.wisc.edu/~anhai/data/784_data/ncvoters-20140619.csv"
+    )
 
     def download(self) -> pd.DataFrame:
         """Download NC Voters dataset."""
         if self.is_production:
             return self._download_production()
-        else:
-            return self._generate_test_data()
+        return self._generate_test_data()
 
     def _download_production(self) -> pd.DataFrame:
-        """Download from Leipzig benchmark or NC voter registry."""
+        """Download from benchmark dataset source."""
         try:
-            url = self.config["source_url"]
+            # Use direct CSV URL instead of the project landing page
+            url = self.DOWNLOAD_URL
             logger.info(f"[NC Voters] Downloading from {url}")
 
             response = self.download_with_retry(url, retries=3, timeout=120)
@@ -207,10 +235,8 @@ class NCVotersHandler(DatasetHandler):
             return self._generate_test_data()
 
     def _generate_test_data(self) -> pd.DataFrame:
-        """Generate synthetic NC voter data."""
-        import random
-
-        base_count = min(self.config["base_records"], 100000)
+        """Generate synthetic NC voter data for local testing."""
+        base_count = self.config["base_records"]
         logger.info(f"[NC Voters] Generating {base_count} test records")
 
         first_names = [
@@ -262,9 +288,11 @@ class NCVotersHandler(DatasetHandler):
         return pd.DataFrame(data)
 
     def normalize_schema(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Map to standard schema."""
+        """Map to standard schema: id, name, address, dob."""
+        df_normalized = df.copy()
+
         # Combine address fields
-        df["address"] = (
+        df_normalized["address"] = (
             df["street_address"]
             + ", "
             + df["city"]
@@ -274,15 +302,26 @@ class NCVotersHandler(DatasetHandler):
             + df["zip"].astype(str)
         )
 
-        return df.rename(
-            columns={"voter_id": "id", "full_name": "name", "birth_year": "dob"}
-        )[["id", "name", "address", "dob"]]
+        df_normalized = df_normalized.rename(
+            columns={
+                "voter_id": "id",
+                "full_name": "name",
+                "birth_year": "dob",
+            }
+        )
+
+        return df_normalized[["id", "name", "address", "dob"]]
 
 
 class OFACHandler(DatasetHandler):
-    """Handler for OFAC SDN sanctions list."""
+    """
+    Handler for OFAC SDN sanctions list.
 
-    # OFAC SDN CSV column names (no header in file)
+    Downloads real sanctions data from US Treasury in both
+    production and local modes (publicly accessible, no auth needed).
+    Falls back to synthetic data only on download failure.
+    """
+
     OFAC_COLUMNS = [
         "ent_num",
         "sdn_name",
@@ -304,10 +343,8 @@ class OFACHandler(DatasetHandler):
             url = self.config["source_url"]
             logger.info(f"[OFAC SDN] Downloading from {url}")
 
-            # Use download_with_retry for robustness
             response = self.download_with_retry(url, retries=3, timeout=60)
 
-            # Parse CSV - OFAC file has no header row
             df = pd.read_csv(
                 io.StringIO(response.text),
                 encoding="utf-8",
@@ -317,30 +354,22 @@ class OFACHandler(DatasetHandler):
                 quotechar='"',
             )
 
-            # Clean up -0- placeholder values
+            # Clean placeholder values
             df = df.replace("-0-", "")
             df = df.replace("-0- ", "")
             logger.info(f"[OFAC SDN] Downloaded {len(df)} records")
             return df
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"[OFAC SDN] Download failed: {e}")
-            logger.warning("[OFAC SDN] Falling back to synthetic data generation")
-            return self._generate_synthetic_data()
-
         except Exception as e:
-            logger.error(f"[OFAC SDN] Parsing failed: {e}")
+            logger.error(f"[OFAC SDN] Download failed: {e}")
             logger.warning("[OFAC SDN] Falling back to synthetic data generation")
             return self._generate_synthetic_data()
 
     def _generate_synthetic_data(self) -> pd.DataFrame:
         """Generate synthetic OFAC-like sanctioned entity data."""
-        import random
-
         base_count = self.config["base_records"]
         logger.info(f"[OFAC SDN] Generating {base_count} synthetic records")
 
-        # Realistic name patterns for sanctioned entities
         first_names = [
             "Ivan",
             "Vladimir",
@@ -374,10 +403,6 @@ class OFACHandler(DatasetHandler):
             "Al-Rashid",
             "Al-Mahmoud",
             "Al-Hussein",
-            "Bin-Laden",
-            "Jong-un",
-            "Jong-il",
-            "Yong-chol",
         ]
         countries = [
             "Russia",
@@ -416,336 +441,24 @@ class OFACHandler(DatasetHandler):
         return pd.DataFrame(data)
 
     def normalize_schema(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Map OFAC SDN to standard schema."""
+        """
+        Map OFAC SDN to standard schema: id, name, address.
+
+        Note: OFAC data lacks structured addresses. The 'address' field is
+        populated from program and title fields for consistency with the
+        standard schema. DOB is not available in the SDN CSV format.
+        """
         df_normalized = pd.DataFrame()
 
-        # Map columns (using lowercase names from OFAC_COLUMNS)
         df_normalized["id"] = df["ent_num"].astype(str)
         df_normalized["name"] = df["sdn_name"].fillna("").astype(str)
 
-        # Combine program and title for address context
+        # Use program + title as address context (OFAC lacks structured addresses)
         df_normalized["address"] = (
             df["program"].fillna("") + " " + df["title"].fillna("")
         ).str.strip()
 
         return df_normalized[["id", "name", "address"]]
-
-    def expand(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Synthetically expand dataset with variations to reach target size."""
-        target = self.config["target_records"]
-        current_size = len(df)
-
-        if current_size >= target:
-            return df.sample(n=target, random_state=42)
-
-        logger.info(
-            f"[OFAC SDN] Expanding {current_size} → {target} records with variations"
-        )
-
-        # Create variations of existing records
-        expanded_records = [df]
-        variation_count = 0
-
-        while sum(len(d) for d in expanded_records) < target:
-            # Create a variation batch
-            variation = df.copy()
-            variation["id"] = range(
-                current_size * (variation_count + 1) + 1,
-                current_size * (variation_count + 2) + 1,
-            )
-
-            # Add name variations (typos, abbreviations)
-            if "name" in variation.columns:
-                variation["name"] = variation["name"].apply(self._create_name_variation)
-
-            expanded_records.append(variation)
-            variation_count += 1
-
-        expanded = pd.concat(expanded_records, ignore_index=True)
-        expanded["id"] = range(1, len(expanded) + 1)
-
-        return expanded.head(target)
-
-    def _create_name_variation(self, name: str) -> str:
-        """Create realistic name variation for entity matching."""
-        import random
-
-        if not name or pd.isna(name):
-            return name
-
-        variations = [
-            lambda n: n.upper(),
-            lambda n: n.lower(),
-            lambda n: n.replace(" ", "  "),  # Double space
-            lambda n: n.replace(" ", ", "),  # Comma separation
-            lambda n: n[: len(n) // 2] + "." if len(n) > 4 else n,  # Abbreviation
-            lambda n: n + " JR." if random.random() > 0.8 else n,
-            lambda n: "MR. " + n if random.random() > 0.8 else n,
-        ]
-
-        return random.choice(variations)(str(name))
-
-
-class WDCProductsHandler(DatasetHandler):
-    """Handler for WDC Products benchmark data."""
-
-    def download(self) -> pd.DataFrame:
-        """Download WDC Products dataset."""
-        if self.is_production:
-            return self._download_production()
-        else:
-            return self._generate_test_data()
-
-    def _download_production(self) -> pd.DataFrame:
-        """Download from webdatacommons.org."""
-        try:
-            url = self.config["source_url"]
-            logger.info(f"[WDC Products] Downloading from {url}")
-
-            response = self.download_with_retry(url, retries=3, timeout=180)
-            df = pd.read_csv(io.StringIO(response.text))
-
-            logger.info(f"[WDC Products] Downloaded {len(df)} records")
-            return df
-
-        except Exception as e:
-            logger.error(f"[WDC Products] Download failed: {e}")
-            logger.warning("[WDC Products] Generating test data")
-            return self._generate_test_data()
-
-    def _generate_test_data(self) -> pd.DataFrame:
-        """Generate synthetic product data."""
-        import random
-
-        base_count = self.config["base_records"]
-        logger.info(f"[WDC Products] Generating {base_count} test records")
-
-        products = [
-            "iPhone",
-            "Galaxy",
-            "Laptop",
-            "Monitor",
-            "Keyboard",
-            "Mouse",
-            "Headphones",
-            "Speaker",
-        ]
-        brands = ["Apple", "Samsung", "Sony", "LG", "Dell", "HP", "Lenovo", "Asus"]
-        categories = ["Electronics", "Computers", "Audio", "Mobile", "Accessories"]
-
-        data = {
-            "product_id": range(1, base_count + 1),
-            "title": [
-                f"{random.choice(products)} {random.randint(1, 20)}"
-                for _ in range(base_count)
-            ],
-            "brand": [random.choice(brands) for _ in range(base_count)],
-            "price": [
-                round(random.uniform(9.99, 999.99), 2) for _ in range(base_count)
-            ],
-            "description": [
-                f"High quality {random.choice(products).lower()}"
-                for _ in range(base_count)
-            ],
-            "category": [random.choice(categories) for _ in range(base_count)],
-        }
-
-        return pd.DataFrame(data)
-
-    def normalize_schema(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Map to standard schema."""
-        # Combine title + brand into name field
-        df["name"] = df["title"].astype(str) + " " + df["brand"].fillna("").astype(str)
-        df["address"] = df.get("description", "").fillna("").astype(str)
-        df["id"] = df["product_id"].astype(str)
-
-        return df[["id", "name", "address"]]
-
-
-class AmazonHandler(DatasetHandler):
-    """Handler for Amazon co-purchase network data."""
-
-    def download(self) -> pd.DataFrame:
-        """Download Amazon dataset."""
-        if self.is_production:
-            return self._download_production()
-        else:
-            return self._generate_test_data()
-
-    def _download_production(self) -> pd.DataFrame:
-        """Download from UCSD Amazon dataset."""
-        try:
-            url = self.config["source_url"]
-            logger.info(f"[Amazon 2018] Downloading from {url}")
-
-            # Amazon data is typically JSONL format
-            response = self.download_with_retry(url, retries=3, timeout=180)
-
-            # Parse JSONL
-            import json
-
-            lines = response.text.strip().split("\n")
-            records = [json.loads(line) for line in lines if line.strip()]
-            df = pd.DataFrame(records)
-
-            logger.info(f"[Amazon 2018] Downloaded {len(df)} records")
-            return df
-
-        except Exception as e:
-            logger.error(f"[Amazon 2018] Download failed: {e}")
-            logger.warning("[Amazon 2018] Generating test data")
-            return self._generate_test_data()
-
-    def _generate_test_data(self) -> pd.DataFrame:
-        """Generate synthetic Amazon product data."""
-        import random
-
-        base_count = self.config["base_records"]
-        logger.info(f"[Amazon 2018] Generating {base_count} test records")
-
-        products = [
-            "Smart Watch",
-            "Fitness Tracker",
-            "Wireless Earbuds",
-            "Power Bank",
-            "USB Cable",
-            "Phone Case",
-            "Screen Protector",
-            "Charging Dock",
-        ]
-        brands = [
-            "Anker",
-            "Belkin",
-            "JBL",
-            "Logitech",
-            "SanDisk",
-            "Kingston",
-            "Western Digital",
-        ]
-
-        data = {
-            "asin": [f"B{str(i).zfill(9)}" for i in range(1, base_count + 1)],
-            "title": [
-                f"{random.choice(products)} by {random.choice(brands)}"
-                for _ in range(base_count)
-            ],
-            "brand": [random.choice(brands) for _ in range(base_count)],
-            "price": [
-                round(random.uniform(5.99, 299.99), 2) for _ in range(base_count)
-            ],
-            "also_bought": [""] * base_count,
-        }
-
-        return pd.DataFrame(data)
-
-    def normalize_schema(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Map to standard schema."""
-        df["name"] = df["title"].astype(str) + " " + df["brand"].fillna("").astype(str)
-        df["address"] = ""  # Products don't have physical address
-        df["id"] = df["asin"].astype(str)
-
-        return df[["id", "name", "address"]]
-
-
-class DBLPACMHandler(DatasetHandler):
-    """Handler for DBLP-ACM author disambiguation dataset."""
-
-    def download(self) -> pd.DataFrame:
-        """Download DBLP-ACM dataset."""
-        if self.is_production:
-            return self._download_production()
-        else:
-            return self._generate_test_data()
-
-    def _download_production(self) -> pd.DataFrame:
-        """Download from Leipzig benchmark."""
-        try:
-            url = self.config["source_url"]
-            logger.info(f"[DBLP-ACM] Downloading from {url}")
-
-            response = self.download_with_retry(url, retries=3, timeout=120)
-            df = pd.read_csv(io.StringIO(response.text))
-
-            logger.info(f"[DBLP-ACM] Downloaded {len(df)} records")
-            return df
-
-        except Exception as e:
-            logger.error(f"[DBLP-ACM] Download failed: {e}")
-            logger.warning("[DBLP-ACM] Generating test data")
-            return self._generate_test_data()
-
-    def _generate_test_data(self) -> pd.DataFrame:
-        """Generate synthetic research paper data."""
-        import random
-
-        base_count = self.config["base_records"]
-        logger.info(f"[DBLP-ACM] Generating {base_count} test records")
-
-        first_names = [
-            "John",
-            "Jane",
-            "Michael",
-            "Sarah",
-            "David",
-            "Emily",
-            "Robert",
-            "Lisa",
-        ]
-        last_names = [
-            "Smith",
-            "Johnson",
-            "Williams",
-            "Brown",
-            "Jones",
-            "Garcia",
-            "Miller",
-            "Davis",
-        ]
-        topics = [
-            "Machine Learning",
-            "Database Systems",
-            "Computer Networks",
-            "Software Engineering",
-            "Artificial Intelligence",
-            "Data Mining",
-            "Computer Vision",
-            "Natural Language Processing",
-        ]
-        venues = [
-            "ICML",
-            "NeurIPS",
-            "CVPR",
-            "ACL",
-            "KDD",
-            "SIGMOD",
-            "VLDB",
-            "AAAI",
-            "IJCAI",
-        ]
-
-        data = {
-            "paper_id": range(1, base_count + 1),
-            "title": [
-                f'{random.choice(topics)}: {random.choice(["A Novel Approach", "Deep Learning Methods", "Scalable Algorithms", "Efficient Techniques"])}'
-                for _ in range(base_count)
-            ],
-            "authors": [
-                f"{random.choice(first_names)} {random.choice(last_names)}"
-                for _ in range(base_count)
-            ],
-            "venue": [random.choice(venues) for _ in range(base_count)],
-            "year": [random.randint(2000, 2024) for _ in range(base_count)],
-        }
-
-        return pd.DataFrame(data)
-
-    def normalize_schema(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Map to standard schema."""
-        df["name"] = df["authors"].astype(str)
-        df["address"] = df["title"].astype(str)
-        df["id"] = df["paper_id"].astype(str)
-
-        return df[["id", "name", "address"]]
 
 
 def get_dataset_handler(dataset_name: str, config: Dict) -> DatasetHandler:
@@ -754,9 +467,6 @@ def get_dataset_handler(dataset_name: str, config: Dict) -> DatasetHandler:
         "pseudopeople": PseudopeopleHandler,
         "nc_voters": NCVotersHandler,
         "ofac_sdn": OFACHandler,
-        "wdc_products": WDCProductsHandler,
-        "amazon_2018": AmazonHandler,
-        "dblp_acm": DBLPACMHandler,
     }
 
     if dataset_name not in handlers:

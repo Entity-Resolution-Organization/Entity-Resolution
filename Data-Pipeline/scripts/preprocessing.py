@@ -1,3 +1,12 @@
+"""
+Preprocessing Module for Entity Resolution Pipeline.
+
+Handles three stages:
+1. Normalization — clean and standardize raw PERSON records
+2. Expansion — generate corrupted variants to reach target dataset size
+3. Pair Generation — create balanced positive/negative training pairs
+"""
+
 import logging
 import random
 import re
@@ -8,38 +17,30 @@ import pandas as pd
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Seed for reproducibility across pipeline runs
+RANDOM_SEED = 42
+
 
 class DataNormalizer:
-    """Normalize values before corruption and matching."""
+    """Normalize PERSON record values before corruption and matching."""
 
     @staticmethod
     def normalize_name(name: str) -> str:
-        """Normalize person/product/author names."""
+        """Normalize person names: strip whitespace, title case."""
         if pd.isna(name):
             return ""
-
-        # Remove extra whitespace
         name = re.sub(r"\s+", " ", str(name).strip())
-
-        # Title case (proper names)
         name = name.title()
-
         return name.strip()
 
     @staticmethod
     def normalize_address(address: str) -> str:
-        """Normalize addresses/descriptions/titles."""
+        """Normalize addresses: strip whitespace, title case."""
         if pd.isna(address):
             return ""
-
         address = str(address).strip()
-
-        # Remove extra whitespace
         address = re.sub(r"\s+", " ", address)
-
-        # Title case
         address = address.title()
-
         return address.strip()
 
     @staticmethod
@@ -47,11 +48,8 @@ class DataNormalizer:
         """Normalize dates to YYYY-MM-DD format."""
         if pd.isna(date_str):
             return ""
-
         try:
-            # Try parsing common formats
             if isinstance(date_str, str):
-                # Remove any non-numeric except dashes/slashes
                 cleaned = re.sub(r"[^\d\-/]", "", str(date_str))
                 dt = pd.to_datetime(cleaned)
                 return dt.strftime("%Y-%m-%d")
@@ -62,7 +60,7 @@ class DataNormalizer:
 
     @staticmethod
     def normalize_record(record: pd.Series) -> pd.Series:
-        """Normalize entire record."""
+        """Normalize entire PERSON record (name, address, dob fields)."""
         normalized = record.copy()
 
         if "name" in normalized and pd.notna(normalized["name"]):
@@ -76,7 +74,6 @@ class DataNormalizer:
         if "dob" in normalized and pd.notna(normalized["dob"]):
             normalized["dob"] = DataNormalizer.normalize_date(normalized["dob"])
 
-        # Remove leading/trailing whitespace from all string columns
         for col in normalized.index:
             if isinstance(normalized[col], str):
                 normalized[col] = normalized[col].strip()
@@ -85,10 +82,9 @@ class DataNormalizer:
 
 
 class NameCorruptor:
-    """Generate realistic name variants and corruptions."""
+    """Generate realistic person name variants and corruptions."""
 
     NICKNAME_MAP = {
-        # Male names
         "Robert": ["Rob", "Bobby", "Robbie"],
         "William": ["Will", "Liam"],
         "James": ["Jim", "Jimmy", "Jamie"],
@@ -117,8 +113,6 @@ class NameCorruptor:
         "Raymond": ["Ray"],
         "Patrick": ["Pat"],
         "Kenneth": ["Ken", "Kenny"],
-
-        # Female names
         "Elizabeth": ["Liz", "Beth", "Lizzie", "Eliza"],
         "Jennifer": ["Jen", "Jenny"],
         "Jessica": ["Jess", "Jessie"],
@@ -147,7 +141,7 @@ class NameCorruptor:
         """Convert formal name to nickname."""
         parts = name.split()
         if len(parts) > 0:
-            first_name = parts[0].title()  # Normalize case before lookup
+            first_name = parts[0].title()
             if first_name in NameCorruptor.NICKNAME_MAP:
                 nicknames = NameCorruptor.NICKNAME_MAP[first_name]
                 parts[0] = random.choice(nicknames)
@@ -163,16 +157,16 @@ class NameCorruptor:
 
     @staticmethod
     def add_middle_initial(name: str) -> str:
-        """Add middle initial."""
+        """Add random middle initial."""
         parts = name.split()
         if len(parts) == 2:
-            initial = chr(random.randint(65, 90))  # A-Z
+            initial = chr(random.randint(65, 90))
             return f"{parts[0]} {initial}. {parts[1]}"
         return name
 
     @staticmethod
     def apply_typo(text: str) -> str:
-        """Introduce random typo (works for any text)."""
+        """Introduce random typo (delete, substitute, or transpose)."""
         if len(text) < 3:
             return text
 
@@ -182,9 +176,8 @@ class NameCorruptor:
         if typo_type == "delete":
             return text[:pos] + text[pos + 1 :]
         elif typo_type == "substitute":
-            # Choose appropriate replacement (letter for letter, digit for digit)
             if text[pos].isalpha():
-                new_char = chr(random.randint(97, 122))  # a-z
+                new_char = chr(random.randint(97, 122))
             elif text[pos].isdigit():
                 new_char = str(random.randint(0, 9))
             else:
@@ -199,7 +192,7 @@ class NameCorruptor:
 
 
 class AddressCorruptor:
-    """Generate realistic address/text variants and corruptions."""
+    """Generate realistic address variants and corruptions."""
 
     ABBREVIATIONS = {
         "Street": ["St", "St.", "Str"],
@@ -229,27 +222,24 @@ class AddressCorruptor:
         """Expand abbreviations to full words."""
         for full, abbrevs in AddressCorruptor.ABBREVIATIONS.items():
             for abbrev in abbrevs:
-                # Use word boundaries to avoid partial matches
                 pattern = r"\b" + re.escape(abbrev) + r"\b"
                 text = re.sub(pattern, full, text, flags=re.IGNORECASE)
         return text
 
     @staticmethod
     def apply_typo(text: str, rate: float = 0.15) -> str:
-        """Introduce typos at specified rate."""
+        """Introduce typos at specified rate per word."""
         words = text.split()
         corrupted = []
-
         for word in words:
             if random.random() < rate and len(word) > 2:
                 word = NameCorruptor.apply_typo(word)
             corrupted.append(word)
-
         return " ".join(corrupted)
 
     @staticmethod
     def reorder_components(text: str) -> str:
-        """Reorder text components (works for comma-separated text)."""
+        """Reorder comma-separated components."""
         parts = text.split(",")
         if len(parts) >= 2:
             return f"{parts[1].strip()}, {parts[0].strip()}"
@@ -257,7 +247,7 @@ class AddressCorruptor:
 
 
 class DataCorruptor:
-    """Main corruption orchestrator."""
+    """Main corruption orchestrator for generating training variants."""
 
     def __init__(self, corruption_rate: float = 0.15):
         self.corruption_rate = corruption_rate
@@ -265,10 +255,10 @@ class DataCorruptor:
         self.address_corruptor = AddressCorruptor()
 
     def corrupt_record(self, record: pd.Series) -> pd.Series:
-        """Apply corruption to single record."""
+        """Apply corruption to a single record."""
         corrupted = record.copy()
 
-        # Name corruption (only if field exists and has value)
+        # Name corruption
         if (
             "name" in corrupted
             and pd.notna(corrupted["name"])
@@ -278,7 +268,6 @@ class DataCorruptor:
                 corruption_type = random.choice(
                     ["nickname", "swap", "middle_initial", "typo"]
                 )
-
                 try:
                     if corruption_type == "nickname":
                         corrupted["name"] = self.name_corruptor.apply_nickname(
@@ -299,7 +288,7 @@ class DataCorruptor:
                 except Exception as e:
                     logger.warning(f"Name corruption failed: {e}")
 
-        # Address corruption (only if field exists and has value)
+        # Address corruption
         if (
             "address" in corrupted
             and pd.notna(corrupted["address"])
@@ -309,7 +298,6 @@ class DataCorruptor:
                 corruption_type = random.choice(
                     ["abbreviate", "expand", "typo", "reorder"]
                 )
-
                 try:
                     if corruption_type == "abbreviate":
                         corrupted["address"] = self.address_corruptor.abbreviate(
@@ -323,7 +311,7 @@ class DataCorruptor:
                         )
                     elif corruption_type == "typo":
                         corrupted["address"] = self.address_corruptor.apply_typo(
-                            str(record["address"])
+                            str(record["address"]), rate=self.corruption_rate
                         )
                     elif corruption_type == "reorder":
                         corrupted["address"] = (
@@ -337,14 +325,20 @@ class DataCorruptor:
         return corrupted
 
     def expand_dataset(self, df: pd.DataFrame, target_size: int) -> pd.DataFrame:
-        """Expand dataset by creating corrupted variants."""
+        """
+        Expand dataset by creating corrupted variants.
+
+        Each original record becomes a cluster with the original + N variants.
+        The cluster_id links variants back to their source record.
+        """
         if len(df) == 0 or target_size == 0:
             logger.warning("Empty dataset or target_size=0, returning empty DataFrame")
             return df
 
         expansion_factor = max(1, target_size // len(df))
         logger.info(
-            f"Expanding dataset: {len(df)} → {target_size} records (factor: {expansion_factor})"
+            f"Expanding dataset: {len(df)} -> {target_size} records "
+            f"(factor: {expansion_factor})"
         )
 
         expanded_records = []
@@ -380,45 +374,35 @@ class DataCorruptor:
 class PairGenerator:
     """Generate positive and negative training pairs."""
 
+    EMPTY_PAIRS_COLUMNS = [
+        "id1",
+        "id2",
+        "name1",
+        "name2",
+        "address1",
+        "address2",
+        "label",
+    ]
+    REQUIRED_FIELDS = ["id", "cluster_id", "name", "address"]
+
     @staticmethod
     def generate_positive_pairs(df: pd.DataFrame, n_pairs: int) -> pd.DataFrame:
-        """Generate positive pairs (same cluster_id)."""
-        # Validate required fields exist
-        required_fields = ["id", "cluster_id", "name", "address"]
-        missing_fields = [f for f in required_fields if f not in df.columns]
+        """Generate positive pairs (same cluster_id = same entity)."""
+        missing_fields = [
+            f for f in PairGenerator.REQUIRED_FIELDS if f not in df.columns
+        ]
         if missing_fields:
             raise ValueError(f"Missing required fields: {missing_fields}")
 
         if len(df) == 0:
             logger.warning("Empty dataframe, returning empty positive pairs")
-            return pd.DataFrame(
-                columns=[
-                    "id1",
-                    "id2",
-                    "name1",
-                    "name2",
-                    "address1",
-                    "address2",
-                    "label",
-                ]
-            )
+            return pd.DataFrame(columns=PairGenerator.EMPTY_PAIRS_COLUMNS)
 
-        # Group by cluster_id
         grouped = df.groupby("cluster_id")
 
         if len(grouped) == 0:
             logger.warning("No cluster groups found, returning empty positive pairs")
-            return pd.DataFrame(
-                columns=[
-                    "id1",
-                    "id2",
-                    "name1",
-                    "name2",
-                    "address1",
-                    "address2",
-                    "label",
-                ]
-            )
+            return pd.DataFrame(columns=PairGenerator.EMPTY_PAIRS_COLUMNS)
 
         pairs = []
         pairs_per_cluster = max(1, n_pairs // len(grouped))
@@ -427,19 +411,12 @@ class PairGenerator:
             if len(group) < 2:
                 continue
 
-            # Sample pairs within cluster
             max_possible_pairs = min(
                 pairs_per_cluster, len(group) * (len(group) - 1) // 2
             )
 
             for _ in range(max_possible_pairs):
-                if len(group) < 2:
-                    break
-
-                sample = group.sample(min(2, len(group)))
-                if len(sample) < 2:
-                    continue
-
+                sample = group.sample(2)
                 pairs.append(
                     {
                         "id1": sample.iloc[0]["id"],
@@ -452,17 +429,19 @@ class PairGenerator:
                     }
                 )
 
+            if len(pairs) >= n_pairs:
+                break
+
         result_df = pd.DataFrame(pairs[:n_pairs])
         logger.info(f"Generated {len(result_df)} positive pairs (requested: {n_pairs})")
-
         return result_df
 
     @staticmethod
     def generate_negative_pairs(df: pd.DataFrame, n_pairs: int) -> pd.DataFrame:
-        """Generate negative pairs (different cluster_id)."""
-        # Validate required fields exist
-        required_fields = ["id", "cluster_id", "name", "address"]
-        missing_fields = [f for f in required_fields if f not in df.columns]
+        """Generate negative pairs (different cluster_id = different entities)."""
+        missing_fields = [
+            f for f in PairGenerator.REQUIRED_FIELDS if f not in df.columns
+        ]
         if missing_fields:
             raise ValueError(f"Missing required fields: {missing_fields}")
 
@@ -470,29 +449,21 @@ class PairGenerator:
 
         if len(unique_clusters) < 2:
             logger.warning(
-                f"Insufficient clusters ({len(unique_clusters)}), returning empty negative pairs"
+                f"Insufficient clusters ({len(unique_clusters)}), "
+                f"returning empty negative pairs"
             )
-            return pd.DataFrame(
-                columns=[
-                    "id1",
-                    "id2",
-                    "name1",
-                    "name2",
-                    "address1",
-                    "address2",
-                    "label",
-                ]
-            )
+            return pd.DataFrame(columns=PairGenerator.EMPTY_PAIRS_COLUMNS)
+
+        # Pre-compute outside loop to avoid repeated list conversion
+        cluster_list = list(unique_clusters)
+        cluster_to_records = {c: df[df["cluster_id"] == c] for c in cluster_list}
 
         pairs = []
-
         for _ in range(n_pairs):
             try:
-                # Sample two different clusters
-                cluster1, cluster2 = random.sample(list(unique_clusters), 2)
-
-                record1 = df[df["cluster_id"] == cluster1].sample(1).iloc[0]
-                record2 = df[df["cluster_id"] == cluster2].sample(1).iloc[0]
+                cluster1, cluster2 = random.sample(cluster_list, 2)
+                record1 = cluster_to_records[cluster1].sample(1).iloc[0]
+                record2 = cluster_to_records[cluster2].sample(1).iloc[0]
 
                 pairs.append(
                     {
@@ -511,7 +482,6 @@ class PairGenerator:
 
         result_df = pd.DataFrame(pairs)
         logger.info(f"Generated {len(result_df)} negative pairs (requested: {n_pairs})")
-
         return result_df
 
     @staticmethod
@@ -526,12 +496,12 @@ class PairGenerator:
 
         all_pairs = pd.concat([positive_pairs, negative_pairs], ignore_index=True)
 
-        # Shuffle pairs
         if len(all_pairs) > 0:
-            all_pairs = all_pairs.sample(frac=1, random_state=42).reset_index(drop=True)
+            all_pairs = all_pairs.sample(frac=1, random_state=RANDOM_SEED).reset_index(
+                drop=True
+            )
 
         logger.info(f"Total pairs generated: {len(all_pairs)}")
-
         return all_pairs
 
 
@@ -548,16 +518,16 @@ def preprocess_dataset(
     Returns:
         Tuple of (expanded_accounts_df, pairs_df)
     """
+    # Seed for reproducibility
+    random.seed(RANDOM_SEED)
+
     logger.info(f"[Preprocessing] Starting with {len(df)} base records")
 
-    # Validate input
     if len(df) == 0:
         logger.warning("[Preprocessing] Empty input dataframe")
-        return df, pd.DataFrame(
-            columns=["id1", "id2", "name1", "name2", "address1", "address2", "label"]
-        )
+        return df, pd.DataFrame(columns=PairGenerator.EMPTY_PAIRS_COLUMNS)
 
-    # Step 1: Normalize values FIRST (before corruption)
+    # Step 1: Normalize values before corruption
     logger.info("[Preprocessing] Normalizing values...")
     try:
         normalizer = DataNormalizer()
@@ -571,7 +541,8 @@ def preprocess_dataset(
     corruption_rate = config.get("corruption", {}).get("rate", 0.15)
 
     logger.info(
-        f"[Preprocessing] Expanding to {target_size} records (corruption rate: {corruption_rate})"
+        f"[Preprocessing] Expanding to {target_size} records "
+        f"(corruption rate: {corruption_rate})"
     )
 
     try:

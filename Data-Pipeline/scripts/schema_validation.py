@@ -1,53 +1,35 @@
 """
 Schema Validation for Entity Resolution Pipeline.
 
-This module provides schema validation for accounts and pairs data.
-It can be run standalone or integrated with Airflow.
-
-Usage:
-    python schema_validation.py --accounts data/processed/accounts.csv --pairs data/processed/er_pairs.csv --output data/metrics
+Validates accounts and pairs dataframes for:
+- Required columns present
+- Null value thresholds
+- ID uniqueness
+- Label validity (binary 0/1)
+- Value length constraints
+- Entity type and source dataset integrity
 """
 
-import argparse
 import json
-import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 import pandas as pd
-
-# Try to import great_expectations library for advanced validation
-try:
-    from great_expectations.data_context import FileDataContext  # noqa: F401
-
-    GE_AVAILABLE = True
-except ImportError:
-    GE_AVAILABLE = False
-    print("[Warning] great_expectations library not installed, using basic validation")
 
 
 class SchemaValidator:
     """Validates entity resolution data schema and quality."""
 
-    def __init__(self, ge_dir: Optional[str] = None, output_dir: str = "data/metrics"):
+    def __init__(self, output_dir: str = "data/metrics"):
         """
         Initialize the schema validator.
 
         Args:
-            ge_dir: Path to validation config directory (optional)
             output_dir: Directory to save validation results
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.ge_dir = ge_dir
-        self.context = None
-
-        if GE_AVAILABLE and ge_dir:
-            try:
-                self.context = FileDataContext(context_root_dir=ge_dir)
-            except Exception as e:
-                print(f"[Warning] Could not load GE context: {e}")
 
     def validate_accounts(self, df: pd.DataFrame) -> Dict:
         """
@@ -82,11 +64,10 @@ class SchemaValidator:
             results["failed_expectations"].append(exp_result)
             results["success"] = False
 
-        # Only continue if required columns exist
         if missing_cols:
             return results
 
-        # Handle empty dataframe to avoid ZeroDivisionError
+        # Handle empty dataframe
         if len(df) == 0:
             exp_result = {
                 "expectation": "expect_table_row_count_to_be_between",
@@ -203,9 +184,9 @@ class SchemaValidator:
             results["failed_expectations"].append(exp_result)
             results["success"] = False
 
-        # Multi-domain validation: entity_type column (optional but validated if present)
+        # Entity type validation (if present)
         if "entity_type" in df.columns:
-            valid_entity_types = {"PERSON", "PRODUCT", "PUBLICATION", "UNKNOWN"}
+            valid_entity_types = {"PERSON", "UNKNOWN"}
             entity_values = set(df["entity_type"].dropna().unique())
             invalid_types = entity_values - valid_entity_types
             exp_result = {
@@ -224,7 +205,7 @@ class SchemaValidator:
                 results["failed_expectations"].append(exp_result)
                 results["success"] = False
 
-        # Multi-domain validation: source_dataset column (optional but validated if present)
+        # Source dataset validation (if present)
         if "source_dataset" in df.columns:
             source_nulls = df["source_dataset"].isnull().sum()
             exp_result = {
@@ -259,7 +240,6 @@ class SchemaValidator:
             2,
         )
 
-        # Add multi-domain stats if present
         if "entity_type" in df.columns:
             results["statistics"]["entity_types"] = df["entity_type"].nunique()
             results["statistics"]["entity_distribution"] = (
@@ -303,11 +283,10 @@ class SchemaValidator:
             results["failed_expectations"].append(exp_result)
             results["success"] = False
 
-        # Only continue if required columns exist
         if missing_cols:
             return results
 
-        # ID1 not null check
+        # ID1 not null
         id1_nulls = df["id1"].isnull().sum()
         exp_result = {
             "expectation": "expect_column_values_to_not_be_null",
@@ -320,7 +299,7 @@ class SchemaValidator:
             results["failed_expectations"].append(exp_result)
             results["success"] = False
 
-        # ID2 not null check
+        # ID2 not null
         id2_nulls = df["id2"].isnull().sum()
         exp_result = {
             "expectation": "expect_column_values_to_not_be_null",
@@ -333,7 +312,7 @@ class SchemaValidator:
             results["failed_expectations"].append(exp_result)
             results["success"] = False
 
-        # Label not null check
+        # Label not null
         label_nulls = df["label"].isnull().sum()
         exp_result = {
             "expectation": "expect_column_values_to_not_be_null",
@@ -346,7 +325,7 @@ class SchemaValidator:
             results["failed_expectations"].append(exp_result)
             results["success"] = False
 
-        # Label values in set {0, 1}
+        # Label values in {0, 1}
         valid_labels = df["label"].isin([0, 1]).sum()
         exp_result = {
             "expectation": "expect_column_values_to_be_in_set",
@@ -364,7 +343,7 @@ class SchemaValidator:
             results["failed_expectations"].append(exp_result)
             results["success"] = False
 
-        # Pair uniqueness check (id1, id2)
+        # Pair uniqueness
         unique_pairs = df.drop_duplicates(subset=["id1", "id2"]).shape[0]
         exp_result = {
             "expectation": "expect_compound_columns_to_be_unique",
@@ -394,9 +373,9 @@ class SchemaValidator:
             results["failed_expectations"].append(exp_result)
             results["success"] = False
 
-        # Multi-domain validation: entity_type column (optional but validated if present)
+        # Entity type validation (if present)
         if "entity_type" in df.columns:
-            valid_entity_types = {"PERSON", "PRODUCT", "PUBLICATION", "UNKNOWN"}
+            valid_entity_types = {"PERSON", "UNKNOWN"}
             entity_values = set(df["entity_type"].dropna().unique())
             invalid_types = entity_values - valid_entity_types
             exp_result = {
@@ -415,7 +394,7 @@ class SchemaValidator:
                 results["failed_expectations"].append(exp_result)
                 results["success"] = False
 
-        # Multi-domain validation: source_dataset column (optional but validated if present)
+        # Source dataset validation (if present)
         if "source_dataset" in df.columns:
             source_nulls = df["source_dataset"].isnull().sum()
             exp_result = {
@@ -452,7 +431,6 @@ class SchemaValidator:
         results["statistics"]["positive_pairs"] = int((df["label"] == 1).sum())
         results["statistics"]["negative_pairs"] = int((df["label"] == 0).sum())
 
-        # Add multi-domain stats if present
         if "entity_type" in df.columns:
             results["statistics"]["entity_types"] = df["entity_type"].nunique()
             results["statistics"]["entity_distribution"] = (
@@ -478,12 +456,14 @@ class SchemaValidator:
 
         accounts_results = self.validate_accounts(accounts_df)
         print(
-            f"[Schema Validation] Accounts: {accounts_results['statistics']['success_rate']}% success rate"
+            f"[Schema Validation] Accounts: "
+            f"{accounts_results['statistics']['success_rate']}% success rate"
         )
 
         pairs_results = self.validate_pairs(pairs_df)
         print(
-            f"[Schema Validation] Pairs: {pairs_results['statistics']['success_rate']}% success rate"
+            f"[Schema Validation] Pairs: "
+            f"{pairs_results['statistics']['success_rate']}% success rate"
         )
 
         combined_results = {
@@ -534,66 +514,3 @@ class SchemaValidator:
             json.dump(results, f, indent=2, default=str)
         print(f"[Schema Validation] Results saved to {output_path}")
         return str(output_path)
-
-
-def validate_data(
-    accounts_path: str, pairs_path: str, output_dir: str = "data/metrics"
-) -> Dict:
-    """
-    Validate accounts and pairs data files.
-
-    Args:
-        accounts_path: Path to accounts CSV
-        pairs_path: Path to pairs CSV
-        output_dir: Directory to save results
-
-    Returns:
-        Validation results
-    """
-    # Load data
-    print(f"[Schema Validation] Loading accounts from {accounts_path}")
-    accounts_df = pd.read_csv(accounts_path)
-
-    print(f"[Schema Validation] Loading pairs from {pairs_path}")
-    pairs_df = pd.read_csv(pairs_path)
-
-    # Validate
-    validator = SchemaValidator(output_dir=output_dir)
-    results = validator.validate_all(accounts_df, pairs_df)
-
-    # Save results
-    validator.save_results(results)
-
-    return results
-
-
-def main():
-    """Main entry point for CLI usage."""
-    parser = argparse.ArgumentParser(
-        description="Validate entity resolution data schema"
-    )
-    parser.add_argument("--accounts", required=True, help="Path to accounts CSV file")
-    parser.add_argument("--pairs", required=True, help="Path to pairs CSV file")
-    parser.add_argument(
-        "--output", default="data/metrics", help="Output directory for results"
-    )
-
-    args = parser.parse_args()
-
-    results = validate_data(args.accounts, args.pairs, args.output)
-
-    # Exit with error code if validation failed
-    if not results["overall_success"]:
-        print(
-            f"[Schema Validation] FAILED - {results['summary']['failed_expectations']} expectations failed"
-        )
-        sys.exit(1)
-    else:
-        print(
-            f"[Schema Validation] PASSED - All {results['summary']['total_expectations']} expectations passed"
-        )
-        sys.exit(0)
-
-
-if __name__ == "__main__":
-    main()
