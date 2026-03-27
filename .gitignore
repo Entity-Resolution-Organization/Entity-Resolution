@@ -1,0 +1,43 @@
+# =============================================================================
+# Entity Resolution Project - Root .gitignore
+# =============================================================================
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform.lock.hcl
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.so
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# DVC cache
+.dvc/tmp
+.dvc/cache
+
+# Environment & Secrets
+.env
+*.key

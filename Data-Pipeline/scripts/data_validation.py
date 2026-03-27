@@ -7,11 +7,10 @@ Provides validation gates for:
 3. Quality gate checks (aggregates all validation results)
 """
 
-import json
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Set, Tuple
+from typing import Dict, Set, Tuple
 
 import pandas as pd
 
@@ -19,18 +18,9 @@ import pandas as pd
 class DatasetValidator:
     """Validates individual dataset outputs after load."""
 
-    # Expected schema by entity type
     REQUIRED_COLUMNS = {
-        "raw": ["id", "name"],  # Minimum required columns for raw data
-        "processed": ["id", "name", "address"],  # Required for processed accounts
-        "pairs": ["id1", "id2", "label"],  # Required for pairs
-    }
-
-    # Entity-type specific expected columns
-    ENTITY_TYPE_COLUMNS = {
-        "PERSON": ["name", "address", "dob"],
-        "PRODUCT": ["name", "address"],  # title mapped to name
-        "PUBLICATION": ["name", "address"],  # title mapped to name
+        "raw": ["id", "name"],
+        "pairs": ["id1", "id2", "label"],
     }
 
     def __init__(self, output_dir: str = "data/metrics"):
@@ -53,12 +43,12 @@ class DatasetValidator:
         - Has minimum required columns
         - Has minimum record count
         - No critical nulls in ID column
-        - Schema matches entity type
+        - Name column mostly present
 
         Args:
             dataset_name: Name of the dataset
             data_path: Path to the raw data CSV
-            entity_type: Entity type (PERSON, PRODUCT, PUBLICATION)
+            entity_type: Entity type (PERSON)
             min_records: Minimum required records (default 100)
 
         Returns:
@@ -103,7 +93,7 @@ class DatasetValidator:
             results["critical_failures"].append("File is empty")
             return results
 
-        # Load data
+        # Check 3: File readable
         try:
             df = pd.read_csv(data_path)
         except Exception as e:
@@ -126,7 +116,7 @@ class DatasetValidator:
             }
         )
 
-        # Check 3: Minimum record count
+        # Check 4: Minimum record count
         record_count = len(df)
         has_min_records = record_count >= min_records
         results["checks"].append(
@@ -145,7 +135,7 @@ class DatasetValidator:
                 f"Only {record_count} records, need at least {min_records}"
             )
 
-        # Check 4: Required columns exist
+        # Check 5: Required columns exist
         required_cols = self.REQUIRED_COLUMNS["raw"]
         missing_cols = [col for col in required_cols if col not in df.columns]
         has_required_cols = len(missing_cols) == 0
@@ -166,11 +156,11 @@ class DatasetValidator:
                 f"Missing required columns: {missing_cols}"
             )
 
-        # Check 5: ID column not null (if exists)
+        # Check 6: ID column not null
         if "id" in df.columns:
             id_nulls = df["id"].isnull().sum()
             id_null_pct = (id_nulls / len(df)) * 100 if len(df) > 0 else 0
-            no_critical_nulls = id_null_pct < 5  # Allow up to 5% nulls
+            no_critical_nulls = id_null_pct < 5
             results["checks"].append(
                 {
                     "check": "id_not_null",
@@ -188,11 +178,11 @@ class DatasetValidator:
                     f"ID column has {id_null_pct:.1f}% nulls (>5% threshold)"
                 )
 
-        # Check 6: Name column mostly not null
+        # Check 7: Name column mostly not null
         if "name" in df.columns:
             name_nulls = df["name"].isnull().sum()
             name_null_pct = (name_nulls / len(df)) * 100 if len(df) > 0 else 0
-            name_ok = name_null_pct < 20  # Allow up to 20% nulls
+            name_ok = name_null_pct < 20
             results["checks"].append(
                 {
                     "check": "name_mostly_present",
@@ -220,135 +210,13 @@ class DatasetValidator:
 
         return results
 
-    def validate_processed_dataset(
-        self,
-        dataset_name: str,
-        accounts_path: str,
-        pairs_path: str,
-        entity_type: str,
-    ) -> Dict:
-        """
-        Validate processed dataset after transform.
-
-        Checks:
-        - Both accounts and pairs files exist
-        - Schema validation
-        - Label distribution in pairs
-        - Record counts reasonable
-        """
-        results = {
-            "dataset_name": dataset_name,
-            "entity_type": entity_type,
-            "timestamp": datetime.now().isoformat(),
-            "checks": [],
-            "success": True,
-            "critical_failures": [],
-        }
-
-        # Validate accounts file
-        if os.path.exists(accounts_path):
-            accounts_df = pd.read_csv(accounts_path)
-            results["checks"].append(
-                {
-                    "check": "accounts_file_exists",
-                    "passed": True,
-                    "details": {"path": accounts_path, "records": len(accounts_df)},
-                }
-            )
-
-            # Check accounts schema
-            required = self.REQUIRED_COLUMNS["processed"]
-            missing = [col for col in required if col not in accounts_df.columns]
-            results["checks"].append(
-                {
-                    "check": "accounts_schema",
-                    "passed": len(missing) == 0,
-                    "details": {"required": required, "missing": missing},
-                }
-            )
-            if missing:
-                results["success"] = False
-                results["critical_failures"].append(
-                    f"Accounts missing columns: {missing}"
-                )
-        else:
-            results["checks"].append(
-                {
-                    "check": "accounts_file_exists",
-                    "passed": False,
-                    "details": {"path": accounts_path},
-                }
-            )
-            results["success"] = False
-            results["critical_failures"].append("Accounts file does not exist")
-
-        # Validate pairs file
-        if os.path.exists(pairs_path):
-            pairs_df = pd.read_csv(pairs_path)
-            results["checks"].append(
-                {
-                    "check": "pairs_file_exists",
-                    "passed": True,
-                    "details": {"path": pairs_path, "records": len(pairs_df)},
-                }
-            )
-
-            # Check pairs schema
-            required = self.REQUIRED_COLUMNS["pairs"]
-            missing = [col for col in required if col not in pairs_df.columns]
-            results["checks"].append(
-                {
-                    "check": "pairs_schema",
-                    "passed": len(missing) == 0,
-                    "details": {"required": required, "missing": missing},
-                }
-            )
-            if missing:
-                results["success"] = False
-                results["critical_failures"].append(f"Pairs missing columns: {missing}")
-
-            # Check label distribution
-            if "label" in pairs_df.columns:
-                pos_count = int((pairs_df["label"] == 1).sum())
-                neg_count = int((pairs_df["label"] == 0).sum())
-                total = pos_count + neg_count
-                balance_ratio = (
-                    min(pos_count, neg_count) / max(pos_count, neg_count)
-                    if total > 0
-                    else 0
-                )
-                results["checks"].append(
-                    {
-                        "check": "label_distribution",
-                        "passed": balance_ratio
-                        >= 0.3,  # At least 30% of majority class
-                        "details": {
-                            "positive_pairs": pos_count,
-                            "negative_pairs": neg_count,
-                            "balance_ratio": round(balance_ratio, 3),
-                        },
-                    }
-                )
-        else:
-            results["checks"].append(
-                {
-                    "check": "pairs_file_exists",
-                    "passed": False,
-                    "details": {"path": pairs_path},
-                }
-            )
-            results["success"] = False
-            results["critical_failures"].append("Pairs file does not exist")
-
-        return results
-
 
 class TrainingSplitValidator:
     """Validates training split outputs."""
 
     REQUIRED_SPLIT_FILES = ["train.csv", "val.csv", "test.csv"]
     EXPECTED_RATIOS = {"train": 0.70, "val": 0.15, "test": 0.15}
-    RATIO_TOLERANCE = 0.05  # Allow 5% deviation
+    RATIO_TOLERANCE = 0.05
 
     def __init__(self, output_dir: str = "data/metrics"):
         """Initialize validator."""
@@ -369,6 +237,7 @@ class TrainingSplitValidator:
         - Label distribution balanced in each split
         - No data leakage between splits
         - Required columns present
+        - Labels are binary (0 or 1)
         """
         results = {
             "entity_type": entity_type,
@@ -459,7 +328,7 @@ class TrainingSplitValidator:
                 results["checks"].append(
                     {
                         "check": f"{split_name}_label_balance",
-                        "passed": balance_ratio >= 0.4,  # At least 40% balance
+                        "passed": balance_ratio >= 0.4,
                         "details": {
                             "positive": pos,
                             "negative": neg,
@@ -471,11 +340,9 @@ class TrainingSplitValidator:
         # Check 5: No data leakage between splits
         pair_sets: Dict[str, Set[Tuple[str, str]]] = {}
         for split_name, df in splits.items():
-            # Create set of (id1, id2) tuples
             pairs = set(zip(df["id1"].astype(str), df["id2"].astype(str)))
             pair_sets[split_name] = pairs
 
-        # Check for overlaps
         overlaps = []
         splits_list = list(pair_sets.keys())
         for i, split1 in enumerate(splits_list):
@@ -542,118 +409,29 @@ class TrainingSplitValidator:
 
         return results
 
-    def validate_all_splits(self, training_dir: str) -> Dict:
-        """
-        Validate training splits for all entity types.
-
-        Args:
-            training_dir: Base training directory containing entity subdirs
-
-        Returns:
-            Combined validation results
-        """
-        results = {
-            "timestamp": datetime.now().isoformat(),
-            "training_dir": training_dir,
-            "entity_validations": {},
-            "overall_success": True,
-            "summary": {
-                "total_checks": 0,
-                "passed_checks": 0,
-                "failed_checks": 0,
-                "critical_failures": [],
-            },
-        }
-
-        entity_types = ["person", "product", "publication"]
-
-        for entity_type in entity_types:
-            entity_dir = os.path.join(training_dir, entity_type)
-
-            if not os.path.exists(entity_dir):
-                results["entity_validations"][entity_type] = {
-                    "success": False,
-                    "critical_failures": [f"Directory does not exist: {entity_dir}"],
-                }
-                results["overall_success"] = False
-                results["summary"]["critical_failures"].append(
-                    f"{entity_type}: Directory missing"
-                )
-                continue
-
-            entity_results = self.validate_entity_splits(entity_type, entity_dir)
-            results["entity_validations"][entity_type] = entity_results
-
-            if not entity_results["success"]:
-                results["overall_success"] = False
-                results["summary"]["critical_failures"].extend(
-                    [f"{entity_type}: {f}" for f in entity_results["critical_failures"]]
-                )
-
-            # Count checks
-            for check in entity_results.get("checks", []):
-                results["summary"]["total_checks"] += 1
-                if check["passed"]:
-                    results["summary"]["passed_checks"] += 1
-                else:
-                    results["summary"]["failed_checks"] += 1
-
-        # Calculate success rate
-        total = results["summary"]["total_checks"]
-        passed = results["summary"]["passed_checks"]
-        results["summary"]["success_rate"] = (
-            round(passed / total * 100, 2) if total > 0 else 0
-        )
-
-        return results
-
-    def save_results(
-        self, results: Dict, filename: str = "training_split_validation.json"
-    ) -> str:
-        """Save validation results to file."""
-        output_path = self.output_dir / filename
-        with open(output_path, "w") as f:
-            json.dump(results, f, indent=2, default=str)
-        return str(output_path)
-
 
 class QualityGate:
     """
     Quality gate that aggregates all validation results.
 
-    Decides go/no-go for cloud upload based on:
+    Decides go/no-go for DVC versioning and cloud upload based on:
     - Schema validation results
     - Training split validation results
     - Bias detection results
     """
 
-    # Severity levels
-    SEVERITY_CRITICAL = "CRITICAL"
-    SEVERITY_HIGH = "HIGH"
-    SEVERITY_MEDIUM = "MEDIUM"
-    SEVERITY_LOW = "LOW"
-
-    def __init__(self, output_dir: str = "data/metrics"):
-        """Initialize quality gate."""
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Minimum success rate thresholds
-    SCHEMA_MIN_SUCCESS_RATE = 70.0  # Schema validation: 70% expectations must pass
-    TRAINING_MIN_SUCCESS_RATE = 80.0  # Training split validation: 80% checks must pass
+    SCHEMA_MIN_SUCCESS_RATE = 70.0
+    TRAINING_MIN_SUCCESS_RATE = 80.0
 
     def evaluate(
         self,
-        schema_results: Optional[Dict] = None,
-        training_results: Optional[Dict] = None,
-        bias_results: Optional[Dict] = None,
+        schema_results: Dict = None,
+        training_results: Dict = None,
+        bias_results: Dict = None,
         fail_on_high_bias: bool = False,
     ) -> Dict:
         """
         Evaluate all validation results and make go/no-go decision.
-
-        Uses success rate thresholds instead of strict pass/fail to handle
-        expected issues in multi-domain data (e.g., duplicate IDs across datasets).
 
         Args:
             schema_results: Schema validation results
@@ -674,7 +452,7 @@ class QualityGate:
             "summary": {},
         }
 
-        # Check 1: Schema validation (use success rate threshold)
+        # Check 1: Schema validation
         if schema_results:
             success_rate = schema_results.get("summary", {}).get(
                 "overall_success_rate", 0
@@ -701,12 +479,11 @@ class QualityGate:
                     f"Schema validation below threshold: {success_rate}% < {self.SCHEMA_MIN_SUCCESS_RATE}%"
                 )
             elif failed_count > 0:
-                # Some expectations failed but within acceptable threshold
                 decision["warnings"].append(
                     f"Schema validation: {failed_count} non-critical expectations failed"
                 )
 
-        # Check 2: Training split validation (use success rate threshold)
+        # Check 2: Training split validation
         if training_results:
             success_rate = training_results.get("summary", {}).get("success_rate", 0)
             training_passed = success_rate >= self.TRAINING_MIN_SUCCESS_RATE
@@ -726,7 +503,6 @@ class QualityGate:
                 }
             )
 
-            # Critical failures always cause NO-GO regardless of success rate
             if critical_failures:
                 decision["passed"] = False
                 decision["failures"].append(
@@ -745,7 +521,6 @@ class QualityGate:
             )
             high_risk_count = bias_results.get("summary", {}).get("high_risk_count", 0)
 
-            # Determine if bias is acceptable
             if bias_risk == "CRITICAL":
                 decision["passed"] = False
                 decision["failures"].append("Critical bias risk detected")
@@ -777,7 +552,6 @@ class QualityGate:
         elif decision["warnings"]:
             decision["decision"] = "GO-WITH-WARNINGS"
 
-        # Summary
         decision["summary"] = {
             "total_checks": len(decision["checks"]),
             "passed_checks": sum(1 for c in decision["checks"] if c["passed"]),
@@ -787,12 +561,3 @@ class QualityGate:
         }
 
         return decision
-
-    def save_results(
-        self, results: Dict, filename: str = "quality_gate_results.json"
-    ) -> str:
-        """Save quality gate results to file."""
-        output_path = self.output_dir / filename
-        with open(output_path, "w") as f:
-            json.dump(results, f, indent=2, default=str)
-        return str(output_path)

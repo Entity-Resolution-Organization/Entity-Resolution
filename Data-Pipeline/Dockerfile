@@ -1,9 +1,9 @@
-# Using Airflow 2.8.1 (stable LTS) - Airflow 3.x has breaking API changes
+# Pinned to Airflow 2.8.1 for stability - Airflow 3.x has breaking API changes
 FROM apache/airflow:2.8.1-python3.10
 
 USER root
 
-# Install system dependencies including git for DVC integration
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \

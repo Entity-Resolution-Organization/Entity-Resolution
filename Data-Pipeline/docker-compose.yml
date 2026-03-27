@@ -4,40 +4,35 @@
 # Start: docker-compose up -d
 # Stop: docker-compose down
 # Logs: docker-compose logs -f
-# UI: http://localhost:8080 (admin/admin)
+# UI: http://localhost:8080
 # =============================================================================
 
 x-airflow-common: &airflow-common
   build:
     context: .
     dockerfile: Dockerfile
-  extra_hosts:
-    - "metadata.google.internal:169.254.169.254"
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    # Empty Fernet key = connections stored unencrypted in Postgres (local dev only)
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'false'
     AIRFLOW__WEBSERVER__RBAC: 'true'
-    # GCP Configuration (set these in .env file for production)
-    GCP_PROJECT_ID: ${GCP_PROJECT_ID:-your-gcp-project-id}
-    GCS_BUCKET: ${GCS_BUCKET:-your-gcs-bucket}
-    BQ_DATASET: ${BQ_DATASET:-your-bq-dataset}
-    # GCP Service Account Credentials (mounted from secrets/)
-    # GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/secrets/gcp-sa-key.json
-    GOOGLE_CLOUD_PROJECT: ${GCP_PROJECT_ID:-your-gcp-project-id}
+    # GCP Configuration (set in .env file)
+    GCP_PROJECT_ID: ${GCP_PROJECT_ID:-}
+    GCS_BUCKET: ${GCS_BUCKET:-}
+    DVC_GCS_BUCKET: ${DVC_GCS_BUCKET:-entity-resolution-dvc-bucket}
+    GOOGLE_CLOUD_PROJECT: ${GCP_PROJECT_ID:-}
     # Python path for custom scripts
     PYTHONPATH: /opt/airflow/scripts
   volumes:
-    # Host machine/Repo folder: Docker container directory equivalent
     - ./dags:/opt/airflow/dags
     - ./scripts:/opt/airflow/scripts
     - ./config:/opt/airflow/config
     - ./data:/opt/airflow/data
     - ./logs:/opt/airflow/logs
-    # - ./secrets:/opt/airflow/secrets:ro
     - ../.dvc:/opt/airflow/.dvc
     - ../.git:/opt/airflow/.git:ro
   user: "${AIRFLOW_UID:-50000}:0"
@@ -121,21 +116,6 @@ services:
       _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-admin}
       _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-admin}
     user: "0:0"
-
-  # ---------------------------------------------------------------------------
-  # Airflow CLI (optional - for running commands)
-  # ---------------------------------------------------------------------------
-  airflow-cli:
-    <<: *airflow-common
-    profiles:
-      - debug
-    environment:
-      <<: *airflow-common-env
-      CONNECTION_CHECK_MAX_COUNT: "0"
-    command:
-      - bash
-      - -c
-      - airflow
 
 volumes:
   postgres-db-volume:

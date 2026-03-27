@@ -8,13 +8,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 
 sys.path.insert(0, "./scripts")
 
-from schema_validation import SchemaValidator, validate_data
+from schema_validation import SchemaValidator
 
 
 @pytest.fixture
@@ -67,7 +66,7 @@ class TestAccountsValidation:
         """Valid accounts should pass all expectations."""
         result = validator.validate_accounts(valid_accounts)
 
-        assert result["success"] == True
+        assert result["success"] is True
         assert result["statistics"]["failed_expectations"] == 0
         assert result["statistics"]["success_rate"] == 100.0
 
@@ -79,7 +78,7 @@ class TestAccountsValidation:
 
         result = validator.validate_accounts(df)
 
-        assert result["success"] == False
+        assert result["success"] is False
         assert "id" in result["failed_expectations"][0]["details"]["missing_columns"]
 
     def test_missing_name_column_fails(self, validator):
@@ -88,8 +87,19 @@ class TestAccountsValidation:
 
         result = validator.validate_accounts(df)
 
-        assert result["success"] == False
+        assert result["success"] is False
         assert "name" in result["failed_expectations"][0]["details"]["missing_columns"]
+
+    def test_missing_address_column_fails(self, validator):
+        """Missing address column should fail."""
+        df = pd.DataFrame({"id": ["1", "2"], "name": ["John", "Jane"]})
+
+        result = validator.validate_accounts(df)
+
+        assert result["success"] is False
+        assert (
+            "address" in result["failed_expectations"][0]["details"]["missing_columns"]
+        )
 
     def test_null_ids_fail(self, validator):
         """Null ID values should fail."""
@@ -103,8 +113,7 @@ class TestAccountsValidation:
 
         result = validator.validate_accounts(df)
 
-        assert result["success"] == False
-        # Find the null check expectation
+        assert result["success"] is False
         null_check = [
             e
             for e in result["failed_expectations"]
@@ -118,7 +127,7 @@ class TestAccountsValidation:
         """Duplicate ID values should fail."""
         df = pd.DataFrame(
             {
-                "id": ["1", "1", "2"],  # '1' is duplicated
+                "id": ["1", "1", "2"],
                 "name": ["John", "John Copy", "Jane"],
                 "address": ["123 Main", "123 Main", "456 Oak"],
             }
@@ -126,8 +135,7 @@ class TestAccountsValidation:
 
         result = validator.validate_accounts(df)
 
-        assert result["success"] == False
-        # Find the uniqueness check
+        assert result["success"] is False
         unique_check = [
             e
             for e in result["failed_expectations"]
@@ -138,7 +146,6 @@ class TestAccountsValidation:
 
     def test_high_null_names_fail(self, validator):
         """More than 5% null names should fail."""
-        # Create 100 records with 10 null names (10%)
         df = pd.DataFrame(
             {
                 "id": [str(i) for i in range(100)],
@@ -149,7 +156,7 @@ class TestAccountsValidation:
 
         result = validator.validate_accounts(df)
 
-        assert result["success"] == False
+        assert result["success"] is False
         null_check = [
             e
             for e in result["failed_expectations"]
@@ -158,19 +165,124 @@ class TestAccountsValidation:
         ]
         assert len(null_check) == 1
 
-    def test_empty_dataframe(self, validator):
+    def test_high_null_addresses_fail(self, validator):
+        """More than 10% null addresses should fail."""
+        df = pd.DataFrame(
+            {
+                "id": [str(i) for i in range(100)],
+                "name": ["John"] * 100,
+                "address": ["123 Main"] * 85 + [None] * 15,
+            }
+        )
+
+        result = validator.validate_accounts(df)
+
+        assert result["success"] is False
+        null_check = [
+            e
+            for e in result["failed_expectations"]
+            if e["expectation"] == "expect_column_values_to_not_be_null"
+            and e.get("column") == "address"
+        ]
+        assert len(null_check) == 1
+
+    def test_empty_dataframe_fails(self, validator):
         """Empty dataframe should fail row count check."""
         df = pd.DataFrame(columns=["id", "name", "address"])
 
         result = validator.validate_accounts(df)
 
-        assert result["success"] == False
+        assert result["success"] is False
         row_check = [
             e
             for e in result["failed_expectations"]
             if e["expectation"] == "expect_table_row_count_to_be_between"
         ]
         assert len(row_check) == 1
+
+    def test_very_long_names_fail(self, validator):
+        """Names longer than 500 chars should fail."""
+        long_name = "A" * 600
+        df = pd.DataFrame({"id": ["1"], "name": [long_name], "address": ["123 Main"]})
+
+        result = validator.validate_accounts(df)
+
+        assert result["success"] is False
+
+    def test_entity_type_validation_valid(self, validator):
+        """Valid entity types should pass."""
+        df = pd.DataFrame(
+            {
+                "id": ["1", "2"],
+                "name": ["John", "Jane"],
+                "address": ["123 Main", "456 Oak"],
+                "entity_type": ["PERSON", "PERSON"],
+            }
+        )
+
+        result = validator.validate_accounts(df)
+
+        assert result["success"] is True
+        assert result["statistics"]["entity_types"] == 1
+
+    def test_entity_type_validation_invalid(self, validator):
+        """Invalid entity types should fail."""
+        df = pd.DataFrame(
+            {
+                "id": ["1", "2"],
+                "name": ["John", "Jane"],
+                "address": ["123 Main", "456 Oak"],
+                "entity_type": ["PERSON", "INVALID_TYPE"],
+            }
+        )
+
+        result = validator.validate_accounts(df)
+
+        assert result["success"] is False
+
+    def test_source_dataset_validation(self, validator):
+        """Source dataset column should not have nulls."""
+        df = pd.DataFrame(
+            {
+                "id": ["1", "2"],
+                "name": ["John", "Jane"],
+                "address": ["123 Main", "456 Oak"],
+                "source_dataset": ["pseudopeople", None],
+            }
+        )
+
+        result = validator.validate_accounts(df)
+
+        assert result["success"] is False
+
+    def test_extra_columns_allowed(self, validator):
+        """Extra columns beyond required should be allowed."""
+        df = pd.DataFrame(
+            {
+                "id": ["1", "2"],
+                "name": ["John", "Jane"],
+                "address": ["123 Main", "456 Oak"],
+                "extra_col": ["a", "b"],
+            }
+        )
+
+        result = validator.validate_accounts(df)
+
+        assert result["success"] is True
+
+    def test_numeric_ids_handled(self, validator):
+        """Numeric IDs should be handled correctly."""
+        df = pd.DataFrame(
+            {
+                "id": [1, 2, 3],
+                "name": ["John", "Jane", "Bob"],
+                "address": ["123 Main", "456 Oak", "789 Pine"],
+            }
+        )
+
+        result = validator.validate_accounts(df)
+
+        assert result["success"] is True
 
 
 class TestPairsValidation:
@@ -180,7 +292,7 @@ class TestPairsValidation:
         """Valid pairs should pass all expectations."""
         result = validator.validate_pairs(valid_pairs)
 
-        assert result["success"] == True
+        assert result["success"] is True
         assert result["statistics"]["failed_expectations"] == 0
         assert result["statistics"]["success_rate"] == 100.0
 
@@ -190,7 +302,7 @@ class TestPairsValidation:
 
         result = validator.validate_pairs(df)
 
-        assert result["success"] == False
+        assert result["success"] is False
         assert "id1" in result["failed_expectations"][0]["details"]["missing_columns"]
 
     def test_missing_label_column_fails(self, validator):
@@ -199,7 +311,7 @@ class TestPairsValidation:
 
         result = validator.validate_pairs(df)
 
-        assert result["success"] == False
+        assert result["success"] is False
         assert "label" in result["failed_expectations"][0]["details"]["missing_columns"]
 
     def test_invalid_label_values_fail(self, validator):
@@ -208,13 +320,13 @@ class TestPairsValidation:
             {
                 "id1": ["1", "2", "3"],
                 "id2": ["4", "5", "6"],
-                "label": [0, 1, 2],  # 2 is invalid
+                "label": [0, 1, 2],
             }
         )
 
         result = validator.validate_pairs(df)
 
-        assert result["success"] == False
+        assert result["success"] is False
         label_check = [
             e
             for e in result["failed_expectations"]
@@ -227,7 +339,7 @@ class TestPairsValidation:
         """Duplicate (id1, id2) pairs should fail."""
         df = pd.DataFrame(
             {
-                "id1": ["1", "1", "2"],  # (1, 4) is duplicated
+                "id1": ["1", "1", "2"],
                 "id2": ["4", "4", "5"],
                 "label": [1, 0, 1],
             }
@@ -235,7 +347,7 @@ class TestPairsValidation:
 
         result = validator.validate_pairs(df)
 
-        assert result["success"] == False
+        assert result["success"] is False
         unique_check = [
             e
             for e in result["failed_expectations"]
@@ -252,7 +364,7 @@ class TestPairsValidation:
 
         result = validator.validate_pairs(df)
 
-        assert result["success"] == False
+        assert result["success"] is False
         null_check = [
             e
             for e in result["failed_expectations"]
@@ -261,12 +373,51 @@ class TestPairsValidation:
         ]
         assert len(null_check) == 1
 
+    def test_null_id1_fails(self, validator):
+        """Null id1 values should fail."""
+        df = pd.DataFrame({"id1": [None, "2"], "id2": ["3", "4"], "label": [1, 0]})
+
+        result = validator.validate_pairs(df)
+
+        assert result["success"] is False
+
+    def test_null_id2_fails(self, validator):
+        """Null id2 values should fail."""
+        df = pd.DataFrame({"id1": ["1", "2"], "id2": [None, "4"], "label": [1, 0]})
+
+        result = validator.validate_pairs(df)
+
+        assert result["success"] is False
+
     def test_label_distribution_tracked(self, validator, valid_pairs):
-        """Label distribution should be tracked in results."""
+        """Label distribution should be tracked in statistics."""
         result = validator.validate_pairs(valid_pairs)
 
         assert result["statistics"]["positive_pairs"] == 3
         assert result["statistics"]["negative_pairs"] == 2
+
+    def test_float_labels_accepted(self, validator):
+        """Float labels (0.0, 1.0) should be handled."""
+        df = pd.DataFrame({"id1": ["1", "2"], "id2": ["3", "4"], "label": [0.0, 1.0]})
+
+        result = validator.validate_pairs(df)
+
+        assert result["success"] is True
+
+    def test_entity_type_in_pairs(self, validator):
+        """Entity type validation in pairs data."""
+        df = pd.DataFrame(
+            {
+                "id1": ["1", "2"],
+                "id2": ["3", "4"],
+                "label": [1, 0],
+                "entity_type": ["PERSON", "PERSON"],
+            }
+        )
+
+        result = validator.validate_pairs(df)
+
+        assert result["success"] is True
 
 
 class TestCombinedValidation:
@@ -276,7 +427,7 @@ class TestCombinedValidation:
         """Valid accounts and pairs should pass."""
         result = validator.validate_all(valid_accounts, valid_pairs)
 
-        assert result["overall_success"] == True
+        assert result["overall_success"] is True
         assert result["summary"]["failed_expectations"] == 0
         assert result["summary"]["overall_success_rate"] == 100.0
 
@@ -284,7 +435,7 @@ class TestCombinedValidation:
         """Invalid accounts should fail overall validation."""
         invalid_accounts = pd.DataFrame(
             {
-                "id": ["1", "1"],  # duplicate
+                "id": ["1", "1"],
                 "name": ["John", "Jane"],
                 "address": ["123 Main", "456 Oak"],
             }
@@ -292,21 +443,48 @@ class TestCombinedValidation:
 
         result = validator.validate_all(invalid_accounts, valid_pairs)
 
-        assert result["overall_success"] == False
-        assert result["accounts_validation"]["success"] == False
-        assert result["pairs_validation"]["success"] == True
+        assert result["overall_success"] is False
+        assert result["accounts_validation"]["success"] is False
+        assert result["pairs_validation"]["success"] is True
 
     def test_invalid_pairs_fails_overall(self, validator, valid_accounts):
         """Invalid pairs should fail overall validation."""
         invalid_pairs = pd.DataFrame(
-            {"id1": ["1", "2"], "id2": ["3", "4"], "label": [0, 5]}  # 5 is invalid
+            {"id1": ["1", "2"], "id2": ["3", "4"], "label": [0, 5]}
         )
 
         result = validator.validate_all(valid_accounts, invalid_pairs)
 
-        assert result["overall_success"] == False
-        assert result["accounts_validation"]["success"] == True
-        assert result["pairs_validation"]["success"] == False
+        assert result["overall_success"] is False
+        assert result["accounts_validation"]["success"] is True
+        assert result["pairs_validation"]["success"] is False
+
+    def test_both_invalid_fails(self, validator):
+        """Both invalid should fail with details from each."""
+        invalid_accounts = pd.DataFrame(
+            {"id": ["1", "1"], "name": ["John", "Jane"], "address": ["123", "456"]}
+        )
+        invalid_pairs = pd.DataFrame(
+            {"id1": ["1", "2"], "id2": ["3", "4"], "label": [0, 5]}
+        )
+
+        result = validator.validate_all(invalid_accounts, invalid_pairs)
+
+        assert result["overall_success"] is False
+        assert result["accounts_validation"]["success"] is False
+        assert result["pairs_validation"]["success"] is False
+        assert result["summary"]["failed_expectations"] >= 2
+
+    def test_summary_counts_correct(self, validator, valid_accounts, valid_pairs):
+        """Summary should correctly aggregate expectation counts."""
+        result = validator.validate_all(valid_accounts, valid_pairs)
+
+        total = result["summary"]["total_expectations"]
+        passed = result["summary"]["successful_expectations"]
+        failed = result["summary"]["failed_expectations"]
+
+        assert total == passed + failed
+        assert total > 0
 
 
 class TestResultsSaving:
@@ -324,77 +502,19 @@ class TestResultsSaving:
             with open(output_path) as f:
                 saved_data = json.load(f)
 
-            assert saved_data["overall_success"] == True
+            assert saved_data["overall_success"] is True
             assert "accounts_validation" in saved_data
             assert "pairs_validation" in saved_data
 
-    def test_validate_data_function(self, valid_accounts, valid_pairs):
-        """Test the validate_data convenience function."""
+    def test_save_results_custom_filename(self, valid_accounts, valid_pairs):
+        """Results should be saved with custom filename."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Save test data
-            accounts_path = Path(tmpdir) / "accounts.csv"
-            pairs_path = Path(tmpdir) / "pairs.csv"
-            output_dir = Path(tmpdir) / "metrics"
+            validator = SchemaValidator(output_dir=tmpdir)
+            result = validator.validate_all(valid_accounts, valid_pairs)
+            output_path = validator.save_results(result, filename="custom_results.json")
 
-            valid_accounts.to_csv(accounts_path, index=False)
-            valid_pairs.to_csv(pairs_path, index=False)
-
-            result = validate_data(str(accounts_path), str(pairs_path), str(output_dir))
-
-            assert result["overall_success"] == True
-            assert (output_dir / "schema_validation_results.json").exists()
-
-
-class TestEdgeCases:
-    """Test edge cases and error handling."""
-
-    def test_extra_columns_allowed(self, validator):
-        """Extra columns beyond required should be allowed."""
-        df = pd.DataFrame(
-            {
-                "id": ["1", "2"],
-                "name": ["John", "Jane"],
-                "address": ["123 Main", "456 Oak"],
-                "extra_col": ["a", "b"],  # Extra column
-            }
-        )
-
-        result = validator.validate_accounts(df)
-
-        assert result["success"] == True
-
-    def test_numeric_ids_handled(self, validator):
-        """Numeric IDs should be handled correctly."""
-        df = pd.DataFrame(
-            {
-                "id": [1, 2, 3],
-                "name": ["John", "Jane", "Bob"],
-                "address": ["123 Main", "456 Oak", "789 Pine"],
-            }
-        )
-
-        result = validator.validate_accounts(df)
-
-        assert result["success"] == True
-
-    def test_very_long_names_fail(self, validator):
-        """Names longer than 500 chars should fail (mostly check)."""
-        long_name = "A" * 600
-        df = pd.DataFrame({"id": ["1"], "name": [long_name], "address": ["123 Main"]})
-
-        result = validator.validate_accounts(df)
-
-        # Should fail because 100% of names exceed length limit (needs 99% valid)
-        assert result["success"] == False
-
-    def test_float_labels_converted(self, validator):
-        """Float labels (0.0, 1.0) should be handled."""
-        df = pd.DataFrame({"id1": ["1", "2"], "id2": ["3", "4"], "label": [0.0, 1.0]})
-
-        result = validator.validate_pairs(df)
-
-        # Float 0.0 and 1.0 should match int 0 and 1
-        assert result["success"] == True
+            assert Path(output_path).exists()
+            assert "custom_results" in output_path
 
 
 if __name__ == "__main__":
