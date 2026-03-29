@@ -65,7 +65,7 @@ training:
 # -----------------------------------------------------------------------------
 data:
   gcs_bucket: "entity-resolution-bucket-1"
-  gcs_path: "training/2026-03-01"
+  gcs_path: "training/2026-03-23"
   local_data_dir: "./data"
 
   # Entity types to train/evaluate — comment out types not yet ready
@@ -90,6 +90,8 @@ data:
     label: "label"
     entity_type: "entity_type"
     source_dataset: "source_dataset"
+#    dob1: "dob1"
+#    dob2: "dob2"
 
 # -----------------------------------------------------------------------------
 # Output paths  (used by both train.py and evaluate.py)
@@ -116,6 +118,7 @@ mlflow:
 
   tags:
     project: "entity-resolution"
+    pipeline_version: "1.0"
     model_type: "deberta-v3-base"
     method: "lora-fine-tuning"
 
@@ -177,7 +180,7 @@ device:
 seed: 42
 
 # -----------------------------------------------------------------------------
-# GCP  (used by push_to_registry.py)
+# GCP
 # -----------------------------------------------------------------------------
 gcp:
   project_id: "entity-resolution-487121"
@@ -189,6 +192,7 @@ gcp:
     image_name: "er_{entity_type}_deberta"   # formatted at runtime
     serving_base_image: "pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime"
     serving_packages:
+      - "google-cloud-storage>=2.0.0"
       - "transformers==4.36.2"
       - "peft==0.7.1"
       - "accelerate==0.25.0"

@@ -1,8 +1,21 @@
 """
+Entity Resolution Bias Detection Script
+
+Loads test_predictions.csv from evaluate.py, slices by source_dataset
+and entity_type, computes per-slice metrics, checks F1 disparity threshold,
+and generates bias_report.json + plots.
+
 Outputs:
-    models/{entity_type}/results/sensitivity_report.json
-    models/{entity_type}/plots/shap_summary.png
-    models/{entity_type}/plots/shap_bar.png
+    models/{entity_type}/results/bias_report.json
+    models/{entity_type}/plots/bias_f1_{slice_col}.png
+    models/{entity_type}/plots/bias_heatmap_{slice_col}.png
+
+Fixes vs previous version:
+    1. MLflow tracking URI respects MLFLOW_TRACKING_URI env var — required
+       for Vertex AI components which cannot resolve 'mlflow' hostname.
+       (No tokenization or NaN fixes needed — this script reads from
+       test_predictions.csv and reapplies the threshold itself, so it is
+       insulated from the input format issues in evaluate.py.)
 """
 
 import json
@@ -14,11 +27,14 @@ import matplotlib.pyplot as plt
 import mlflow
 import numpy as np
 import pandas as pd
-import torch
+import seaborn as sns
 import yaml
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-from peft import PeftModel
-
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+)
 
 DEFAULT_CONFIG_PATH = "config/training_config.yaml"
 
@@ -28,275 +44,271 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
-class SensitivityAnalyzer:
+class BiasDetector:
     """
-    SHAP-based sensitivity analysis for the DeBERTa entity resolution model.
-    Uses a text masking approach compatible with transformer models.
+    Slices test predictions by source_dataset and entity_type,
+    computes per-slice metrics, checks disparity thresholds.
     """
 
     def __init__(self, config: dict, entity_type: str):
         self.config      = config
         self.entity_type = entity_type.lower()
 
-        base_dir    = config["output"]["base_dir"]
-        model_dir   = f"{base_dir}/{entity_type}"
-        self.final_model_dir = f"{model_dir}/final_model"
-        self.results_dir     = f"{model_dir}/results"
-        self.plots_dir       = f"{model_dir}/plots"
+        base_dir         = config["output"]["base_dir"]
+        model_dir        = f"{base_dir}/{entity_type}"
+        self.results_dir = f"{model_dir}/results"
+        self.plots_dir   = f"{model_dir}/plots"
         os.makedirs(self.results_dir, exist_ok=True)
         os.makedirs(self.plots_dir,   exist_ok=True)
 
-        use_cuda  = config["device"]["use_cuda"]
-        cuda_id   = config["device"]["cuda_device"]
-        self.device = (
-            torch.device(f"cuda:{cuda_id}")
-            if use_cuda and torch.cuda.is_available()
-            else torch.device("cpu")
-        )
-        self.n_samples = config["sensitivity"]["shap_samples"]
+        self.bias_cfg  = config["bias_detection"]
+        self.threshold = config["validation"]["classification_threshold"]
 
-        print(f"[Sensitivity] entity_type : {self.entity_type}")
-        print(f"[Sensitivity] device      : {self.device}")
-        print(f"[Sensitivity] shap_samples: {self.n_samples}")
+        print(f"[Bias] entity_type : {self.entity_type}")
+        print(f"[Bias] threshold   : {self.threshold}")
 
     # ------------------------------------------------------------------
-    # Load model
+    # Load predictions
     # ------------------------------------------------------------------
 
-    def load_model_and_tokenizer(self):
-        print(f"[Sensitivity] Loading model from {self.final_model_dir}")
-        cache_dir = self.config["model"].get("cache_dir")
-
-        base_model = AutoModelForSequenceClassification.from_pretrained(
-            self.config["model"]["base_model"],
-            num_labels=self.config["model"]["num_labels"],
-            cache_dir=cache_dir,
-        )
-        model     = PeftModel.from_pretrained(base_model, self.final_model_dir)
-        model     = model.merge_and_unload()
-        tokenizer = AutoTokenizer.from_pretrained(
-            self.final_model_dir, cache_dir=cache_dir
-        )
-        model.to(self.device)
-        model.eval()
-        return model, tokenizer
-
-    # ------------------------------------------------------------------
-    # Load sample
-    # ------------------------------------------------------------------
-
-    def load_sample(self) -> pd.DataFrame:
-        preds_path = os.path.join(self.results_dir, "test_predictions.csv")
-        if not os.path.exists(preds_path):
+    def load_predictions(self) -> pd.DataFrame:
+        path = os.path.join(self.results_dir, "test_predictions.csv")
+        if not os.path.exists(path):
             raise FileNotFoundError(
-                f"test_predictions.csv not found at {preds_path}. "
+                f"test_predictions.csv not found at {path}. "
                 "Run evaluate.py first."
             )
-        df = pd.read_csv(preds_path)
-
-        # Balanced sample — equal matches and non-matches
-        n_each  = self.n_samples // 2
-        matches = df[df["label"] == 1].sample(
-            min(n_each, len(df[df["label"] == 1])), random_state=42
-        )
-        non_matches = df[df["label"] == 0].sample(
-            min(n_each, len(df[df["label"] == 0])), random_state=42
-        )
-        sample = pd.concat([matches, non_matches]).reset_index(drop=True)
-        print(f"[Sensitivity] Sample: {len(sample)} pairs "
-              f"({len(matches)} matches, {len(non_matches)} non-matches)")
-        return sample
+        df = pd.read_csv(path)
+        print(f"[Bias] Loaded {len(df)} predictions from {path}")
+        return df
 
     # ------------------------------------------------------------------
-    # Feature importance via field masking
+    # Per-slice metrics
     # ------------------------------------------------------------------
 
-    def compute_field_importance(
-        self,
-        model,
-        tokenizer,
-        sample: pd.DataFrame,
+    def compute_slice_metrics(
+        self, df: pd.DataFrame, slice_col: str
     ) -> dict:
-        """
-        Compute importance of each input field by masking it out and
-        measuring the drop in prediction confidence.
+        """Compute F1/precision/recall/accuracy per unique value of slice_col."""
+        slices   = {}
+        min_size = self.bias_cfg["min_slice_size"]
+        col_lbl  = self.config["data"]["columns"]["label"]
 
-        Fields: name1, address1, name2, address2
-        """
-        cols       = self.config["data"]["columns"]
-        max_length = self.config["model"]["max_length"]
-        threshold  = self.config["validation"]["classification_threshold"]
+        for value in df[slice_col].unique():
+            subset = df[df[slice_col] == value]
 
-        fields = {
-            "name1":    cols["name1"],
-            "address1": cols["address1"],
-            "name2":    cols["name2"],
-            "address2": cols["address2"],
-        }
-        MASK_TOKEN = "[MASK]"
+            if len(subset) < min_size:
+                print(f"[Bias]   Skipping {slice_col}={value} "
+                      f"— only {len(subset)} samples (min={min_size})")
+                continue
 
-        def build_text(row, masked_field=None):
-            vals = {k: str(row[v]) if masked_field != k else MASK_TOKEN
-                    for k, v in fields.items()}
-            return (
-                f"{vals['name1']} [SEP] {vals['address1']} "
-                f"[SEP] {vals['name2']} [SEP] {vals['address2']}"
-            )
+            true = subset[col_lbl].values
+            pred = subset["predicted_label"].values
 
-        def get_probs(texts):
-            enc = tokenizer(
-                texts,
-                truncation=True,
-                padding="max_length",
-                max_length=max_length,
-                return_tensors="pt",
-            )
-            enc = {k: v.to(self.device)
-                   for k, v in enc.items() if k != "token_type_ids"}
-            with torch.no_grad():
-                logits = model(**enc).logits
-            probs = torch.softmax(logits, dim=-1)[:, 1].cpu().numpy()
-            return probs
+            if len(np.unique(true)) < 2:
+                print(f"[Bias]   Skipping {slice_col}={value} — single class")
+                continue
 
-        print("[Sensitivity] Computing baseline predictions...")
-        baseline_texts = [build_text(row) for _, row in sample.iterrows()]
-        baseline_probs = get_probs(baseline_texts)
-
-        importance = {}
-        for field_key in fields:
-            print(f"[Sensitivity] Masking field: {field_key}")
-            masked_texts  = [build_text(row, masked_field=field_key)
-                             for _, row in sample.iterrows()]
-            masked_probs  = get_probs(masked_texts)
-            drop          = baseline_probs - masked_probs
-            importance[field_key] = {
-                "mean_drop":   float(np.mean(drop)),
-                "std_drop":    float(np.std(drop)),
-                "mean_abs_drop": float(np.mean(np.abs(drop))),
-                "importance_score": float(np.mean(np.abs(drop))),
+            slices[str(value)] = {
+                "n_samples":  int(len(subset)),
+                "n_positive": int(true.sum()),
+                "accuracy":   float(accuracy_score(true, pred)),
+                "f1":         float(f1_score(true, pred, zero_division=0)),
+                "precision":  float(precision_score(true, pred, zero_division=0)),
+                "recall":     float(recall_score(true, pred, zero_division=0)),
             }
+            s = slices[str(value)]
             print(
-                f"  {field_key:12s} | mean drop={importance[field_key]['mean_drop']:+.4f} "
-                f"| importance={importance[field_key]['importance_score']:.4f}"
+                f"[Bias]   {slice_col}={str(value):20s} | "
+                f"n={s['n_samples']:5d} | "
+                f"F1={s['f1']:.4f} | "
+                f"P={s['precision']:.4f} | "
+                f"R={s['recall']:.4f}"
             )
 
-        return importance, baseline_probs
+        return slices
+
+    # ------------------------------------------------------------------
+    # Disparity check
+    # ------------------------------------------------------------------
+
+    def check_disparity(self, slices: dict, metric: str = "f1") -> dict:
+        """
+        Check whether max - min metric value across slices exceeds threshold.
+        Always returns 'threshold' key so pipeline components can read it
+        without conditional logic.
+        """
+        values    = [s[metric] for s in slices.values() if s[metric] > 0]
+        threshold = float(self.bias_cfg[f"max_{metric}_disparity"])
+
+        if len(values) < 2:
+            return {
+                "bias_detected":       False,
+                "reason":              "insufficient slices",
+                f"{metric}_disparity": 0.0,
+                "threshold":           threshold,
+            }
+
+        max_val   = max(values)
+        min_val   = min(values)
+        disparity = max_val - min_val
+
+        return {
+            "bias_detected":       disparity > threshold,
+            f"max_{metric}":       float(max_val),
+            f"min_{metric}":       float(min_val),
+            f"{metric}_disparity": float(disparity),
+            "threshold":           threshold,
+        }
 
     # ------------------------------------------------------------------
     # Plots
     # ------------------------------------------------------------------
 
-    def plot_feature_importance(self, importance: dict) -> str:
-        fields = list(importance.keys())
-        scores = [importance[f]["importance_score"] for f in fields]
-        colors = ["#1D9E75" if s == max(scores) else "#9FE1CB" for s in scores]
+    def plot_f1_by_slice(self, slices: dict, slice_col: str) -> str:
+        names  = list(slices.keys())
+        f1s    = [slices[n]["f1"] for n in names]
+        min_f1 = self.config["validation"]["min_f1"]
+        colors = ["#1D9E75" if f >= min_f1 else "#D85A30" for f in f1s]
 
-        idx    = np.argsort(scores)[::-1]
-        fields = [fields[i] for i in idx]
-        scores = [scores[i] for i in idx]
-        colors = [colors[i] for i in idx]
+        fig, ax = plt.subplots(figsize=(max(8, len(names) * 1.2), 5))
+        bars = ax.bar(names, f1s, color=colors, edgecolor="none")
+        ax.axhline(
+            min_f1, color="#888780", linestyle="--", linewidth=1,
+            label=f"min F1 threshold ({min_f1})",
+        )
+        ax.set_ylim(0, 1.05)
+        ax.set_xlabel(slice_col)
+        ax.set_ylabel("F1 score")
+        ax.set_title(f"F1 by {slice_col} — {self.entity_type}")
+        ax.legend(fontsize=10)
+        plt.xticks(rotation=30, ha="right")
 
-        fig, ax = plt.subplots(figsize=(8, 4))
-        bars = ax.barh(fields[::-1], scores[::-1], color=colors[::-1], edgecolor="none")
-        ax.set_xlabel("Importance score (mean |prob drop| when masked)")
-        ax.set_title(f"Field importance — {self.entity_type}")
-        ax.set_xlim(0, max(scores) * 1.3)
-
-        for bar, val in zip(bars, scores[::-1]):
-            ax.text(bar.get_width() + 0.001, bar.get_y() + bar.get_height() / 2,
-                    f"{val:.4f}", va="center", fontsize=10)
+        for bar, val in zip(bars, f1s):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.01,
+                f"{val:.3f}", ha="center", va="bottom", fontsize=10,
+            )
 
         plt.tight_layout()
-        path = os.path.join(self.plots_dir, "shap_bar.png")
+        path = os.path.join(self.plots_dir, f"bias_f1_{slice_col}.png")
         plt.savefig(path, dpi=150)
         plt.close()
-        print(f"[Sensitivity] Bar chart → {path}")
+        print(f"[Bias] F1 plot → {path}")
         return path
 
-    def plot_drop_distribution(
-        self, importance: dict, baseline_probs: np.ndarray
-    ) -> str:
-        fig, axes = plt.subplots(1, 4, figsize=(14, 4))
-        for ax, (field, info) in zip(axes, importance.items()):
-            ax.axhline(0, color="#888780", linewidth=0.8, linestyle="--")
-            ax.bar(range(len(baseline_probs)),
-                   [info["mean_drop"]] * len(baseline_probs),
-                   color="#378ADD", alpha=0.6)
-            ax.set_title(field, fontsize=11)
-            ax.set_xlabel("sample index", fontsize=9)
-            if ax == axes[0]:
-                ax.set_ylabel("prob drop when masked", fontsize=9)
-            ax.set_ylim(-0.3, 0.3)
+    def plot_metrics_heatmap(self, slices: dict, slice_col: str) -> str:
+        metrics = ["f1", "precision", "recall", "accuracy"]
+        names   = list(slices.keys())
+        data    = [[slices[n][m] for m in metrics] for n in names]
 
-        plt.suptitle(f"Prediction drop by masked field — {self.entity_type}",
-                     fontsize=12)
+        fig, ax = plt.subplots(figsize=(8, max(4, len(names) * 0.6 + 2)))
+        sns.heatmap(
+            data, annot=True, fmt=".3f", cmap="RdYlGn",
+            xticklabels=metrics, yticklabels=names,
+            vmin=0, vmax=1, ax=ax, linewidths=0.5,
+        )
+        ax.set_title(f"Metrics by {slice_col} — {self.entity_type}")
         plt.tight_layout()
-        path = os.path.join(self.plots_dir, "shap_summary.png")
+        path = os.path.join(self.plots_dir, f"bias_heatmap_{slice_col}.png")
         plt.savefig(path, dpi=150)
         plt.close()
-        print(f"[Sensitivity] Summary plot → {path}")
+        print(f"[Bias] Heatmap → {path}")
         return path
 
     # ------------------------------------------------------------------
-    # Main analyze()
+    # Main detect()
     # ------------------------------------------------------------------
 
-    def analyze(self) -> dict:
-        # Load
-        model, tokenizer = self.load_model_and_tokenizer()
-        sample           = self.load_sample()
+    def detect(self) -> dict:
+        df = self.load_predictions()
 
-        # Compute importance
-        importance, baseline_probs = self.compute_field_importance(
-            model, tokenizer, sample
-        )
+        # Always reapply threshold from config — do not trust CSV predicted_label
+        # since it may have been generated with a different threshold value.
+        df["predicted_label"] = (df["predicted_prob"] >= self.threshold).astype(int)
+        print(f"[Bias] Reapplied threshold={self.threshold} to predicted_prob")
 
-        # Rank fields
-        ranked = sorted(
-            importance.items(),
-            key=lambda x: x[1]["importance_score"],
-            reverse=True,
-        )
-
-        print("\n[Sensitivity] Field ranking:")
-        for rank, (field, info) in enumerate(ranked, 1):
-            print(f"  {rank}. {field:12s} importance={info['importance_score']:.4f}")
-
-        # Plots
-        bar_path     = self.plot_feature_importance(importance)
-        summary_path = self.plot_drop_distribution(importance, baseline_probs)
-
-        # Report
+        slice_cols = self.bias_cfg["slices"]
         report = {
-            "entity_type":    self.entity_type,
-            "n_samples":      len(sample),
-            "method":         "field_masking",
-            "field_ranking":  [f for f, _ in ranked],
-            "importance":     importance,
-            "most_important": ranked[0][0],
-            "least_important": ranked[-1][0],
+            "entity_type":            self.entity_type,
+            "n_samples":              len(df),
+            "threshold":              self.threshold,
+            "slices":                 {},
+            "disparity":              {},
+            "bias_detected":          False,
+            "mitigation_suggestions": [],
         }
+        plot_paths = []
 
-        report_path = os.path.join(self.results_dir, "sensitivity_report.json")
+        for slice_col in slice_cols:
+            if slice_col not in df.columns:
+                print(f"[Bias] Column '{slice_col}' not in predictions — skipping")
+                continue
+
+            print(f"\n[Bias] Slicing by: {slice_col}")
+            slices = self.compute_slice_metrics(df, slice_col)
+
+            if not slices:
+                print(f"[Bias] No valid slices for {slice_col}")
+                continue
+
+            disparity = self.check_disparity(slices, "f1")
+
+            report["slices"][slice_col]    = slices
+            report["disparity"][slice_col] = disparity
+
+            max_f1_disparity = self.bias_cfg["max_f1_disparity"]
+
+            if disparity["bias_detected"]:
+                report["bias_detected"] = True
+                report["mitigation_suggestions"].append(
+                    f"F1 disparity of {disparity['f1_disparity']:.3f} across "
+                    f"'{slice_col}' exceeds threshold {max_f1_disparity}. "
+                    f"Consider re-sampling under-performing slices or applying "
+                    f"per-slice decision thresholds."
+                )
+                print(
+                    f"[Bias] BIAS DETECTED in {slice_col}: "
+                    f"disparity={disparity['f1_disparity']:.3f} "
+                    f"> threshold={max_f1_disparity}"
+                )
+            else:
+                print(
+                    f"[Bias] OK — {slice_col} "
+                    f"disparity={disparity.get('f1_disparity', 0):.3f} "
+                    f"<= threshold={max_f1_disparity}"
+                )
+
+            plot_paths.append(self.plot_f1_by_slice(slices, slice_col))
+            plot_paths.append(self.plot_metrics_heatmap(slices, slice_col))
+
+        # Save report
+        report_path = os.path.join(self.results_dir, "bias_report.json")
         with open(report_path, "w") as f:
             json.dump(report, f, indent=2)
-        print(f"[Sensitivity] Report → {report_path}")
+        print(f"\n[Bias] Report → {report_path}")
 
-        # Log to MLflow
-        mlflow.set_tracking_uri(self.config["mlflow"]["tracking_uri"])
+        # FIX 1: env var takes priority over config
+        mlflow.set_tracking_uri(
+            os.environ.get("MLFLOW_TRACKING_URI") or self.config["mlflow"]["tracking_uri"]
+        )
         mlflow.set_experiment(self.config["mlflow"]["experiment_name"])
 
         with mlflow.start_run(
-            run_name=f"sensitivity_{self.entity_type}",
-            tags={"entity_type": self.entity_type, "stage": "sensitivity"},
+            run_name=f"bias_detection_{self.entity_type}",
+            tags={"entity_type": self.entity_type, "stage": "bias_detection"},
         ):
-            for field, info in importance.items():
-                mlflow.log_metric(
-                    f"importance_{field}", info["importance_score"]
-                )
-            mlflow.log_artifact(report_path,   artifact_path="sensitivity")
-            mlflow.log_artifact(bar_path,      artifact_path="sensitivity/plots")
-            mlflow.log_artifact(summary_path,  artifact_path="sensitivity/plots")
+            mlflow.log_artifact(report_path, artifact_path="bias")
+            for p in plot_paths:
+                mlflow.log_artifact(p, artifact_path="bias/plots")
+
+            for slice_col, slices in report["slices"].items():
+                for slice_val, m in slices.items():
+                    key = f"f1_{slice_col}_{slice_val}".replace(" ", "_")[:250]
+                    mlflow.log_metric(key, m["f1"])
+
+            mlflow.log_metric("bias_detected", int(report["bias_detected"]))
 
         return report
 
@@ -310,12 +322,8 @@ def main():
     config       = load_config(config_path)
     entity_types = config["data"]["entity_types"]
 
-    if not config["sensitivity"]["enabled"]:
-        print("[Sensitivity] Disabled in config — skipping")
-        return
-
     print("=" * 70)
-    print("ENTITY RESOLUTION — SENSITIVITY ANALYSIS")
+    print("ENTITY RESOLUTION — BIAS DETECTION")
     print("=" * 70)
 
     for entity_type in entity_types:
@@ -323,14 +331,17 @@ def main():
         print(f"Entity type: {entity_type.upper()}")
         print(f"{'=' * 70}")
 
-        analyzer = SensitivityAnalyzer(config=config, entity_type=entity_type)
-        report   = analyzer.analyze()
+        detector = BiasDetector(config=config, entity_type=entity_type)
+        report   = detector.detect()
 
-        print(f"\n[Summary] Most important field : {report['most_important']}")
-        print(f"[Summary] Least important field: {report['least_important']}")
+        print(f"\n[Summary] bias_detected: {report['bias_detected']}")
+        if report["mitigation_suggestions"]:
+            print("[Summary] Mitigation suggestions:")
+            for s in report["mitigation_suggestions"]:
+                print(f"  - {s}")
 
     print("\n" + "=" * 70)
-    print("SENSITIVITY ANALYSIS COMPLETE")
+    print("BIAS DETECTION COMPLETE")
     print("=" * 70)
 
 

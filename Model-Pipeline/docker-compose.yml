@@ -1,7 +1,10 @@
 # =============================================================================
 # Entity Resolution — Model Pipeline
-# Services: mlflow, trainer, airflow
-# Port 8081 for Airflow
+# Services: mlflow, trainer
+#
+# Trigger training runs with:
+#   docker compose run --rm trainer python scripts/pipeline.py --run \
+#     --mlflow-uri http://<VM-EXTERNAL-IP>:5000
 # =============================================================================
 
 x-common-env: &common-env
@@ -34,8 +37,16 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Trainer  — runs train.py then exits
-  # Override CMD to run evaluate.py, bias_detection.py etc.
+  # Trainer — used to compile/submit the Vertex AI pipeline, then exits.
+  # Scripts are volume-mounted so changes are picked up without rebuilding.
+  #
+  # Compile + upload pipeline:
+  #   docker compose run --rm trainer python scripts/pipeline.py --compile --upload \
+  #     --mlflow-uri http://<VM-EXTERNAL-IP>:5000
+  #
+  # Submit a training run:
+  #   docker compose run --rm trainer python scripts/pipeline.py --run \
+  #     --mlflow-uri http://<VM-EXTERNAL-IP>:5000
   # ---------------------------------------------------------------------------
   trainer:
     build: .
@@ -60,42 +71,6 @@ services:
               capabilities: [gpu]
     env_file: .env
     restart: "no"
-
-  # ---------------------------------------------------------------------------
-  # Airflow  — orchestrates the pipeline
-  # ---------------------------------------------------------------------------
-  airflow:
-    image: apache/airflow:2.8.0-python3.10
-    extra_hosts:
-      - "metadata.google.internal:169.254.169.254"
-    depends_on:
-      - mlflow
-    environment:
-      <<: *common-env
-      AIRFLOW__CORE__EXECUTOR: SequentialExecutor
-      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////home/airflow/airflow.db
-      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
-      GCP_PROJECT_ID: entity-resolution-487121
-      GCP_REGION: us-central1
-      _AIRFLOW_DB_UPGRADE: "true"
-      _AIRFLOW_WWW_USER_CREATE: "true"
-      _AIRFLOW_WWW_USER_USERNAME: admin
-      _AIRFLOW_WWW_USER_PASSWORD: admin
-    volumes:
-      - ./dags:/opt/airflow/dags
-      - ./scripts:/opt/airflow/scripts
-      - ./config:/opt/airflow/config
-      - ./models:/opt/airflow/models
-      - ./data:/opt/airflow/data
-      - ./cache:/opt/airflow/cache
-      - /var/run/docker.sock:/var/run/docker.sock
-    ports:
-      - "8081:8080"
-    command: >
-      bash -c "pip install apache-airflow-providers-google apache-airflow-providers-docker && airflow standalone"
-    env_file: .env
-    restart: unless-stopped
 
 volumes:
   mlflow_data:

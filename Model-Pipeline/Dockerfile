@@ -11,10 +11,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Serving dependencies (used by serve.py in the er_{entity}_deberta image)
+RUN pip install --no-cache-dir \
+    fastapi \
+    "uvicorn[standard]" \
+    pydantic
+
+# KFP + Vertex AI SDK (used by pipeline.py to compile and submit)
+RUN pip install --no-cache-dir \
+    kfp==2.7.0 \
+    google-cloud-aiplatform \
+    google-cloud-storage
+
 # Copy pipeline code
 COPY scripts/ ./scripts/
 COPY config/  ./config/
-COPY dags/    ./dags/
 
 ENV CONFIG_PATH=config/training_config.yaml
 ENV PYTHONUNBUFFERED=1
