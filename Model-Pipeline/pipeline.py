@@ -79,12 +79,22 @@ def train_op(mlflow_tracking_uri: str) -> str:
 
 @component(base_image=TRAINER_IMAGE)
 def evaluate_op(mlflow_tracking_uri: str, gcs_bucket: str) -> str:
-    """
-    Calls evaluate.py, then syncs /app/models/ →
-    gs://{gcs_bucket}/pipeline-results/models/ for downstream components.
-    """
     import os, pathlib, subprocess
     from google.cloud import storage
+
+    client = storage.Client()
+
+    # Downloads LoRA weights uploaded by train.py
+    downloaded = 0
+    for blob in client.list_blobs(gcs_bucket, prefix="models/"):
+        if blob.name.endswith("/"):
+            continue
+        rel   = blob.name.replace("models/", "", 1)
+        local = pathlib.Path("/app/models") / rel
+        local.parent.mkdir(parents=True, exist_ok=True)
+        blob.download_to_filename(str(local))
+        downloaded += 1
+    print(f"[evaluate_op] Downloaded {downloaded} weight files from GCS")
 
     env = {
         **os.environ,
@@ -95,7 +105,7 @@ def evaluate_op(mlflow_tracking_uri: str, gcs_bucket: str) -> str:
     if res.returncode != 0:
         raise RuntimeError(f"evaluate.py failed (exit {res.returncode})")
 
-    client = storage.Client()
+    # Syncs outputs to GCS for downstream components
     bucket = client.bucket(gcs_bucket)
     uploaded = 0
     for path in pathlib.Path("/app/models").rglob("*"):
@@ -802,7 +812,6 @@ def run_pipeline(
     )
 
     job.run(sync=False)
-    print(f"[run] Submitted: {job.resource_name}")
     print(
         f"[run] Monitor: https://console.cloud.google.com/vertex-ai/pipelines"
         f"?project={PROJECT_ID}"
