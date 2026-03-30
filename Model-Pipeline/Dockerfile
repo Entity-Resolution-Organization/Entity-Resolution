@@ -26,6 +26,7 @@ RUN pip install --no-cache-dir \
 # Copy pipeline code
 COPY scripts/ ./scripts/
 COPY config/  ./config/
+COPY pipeline.py ./pipeline.py
 
 ENV CONFIG_PATH=config/training_config.yaml
 ENV PYTHONUNBUFFERED=1

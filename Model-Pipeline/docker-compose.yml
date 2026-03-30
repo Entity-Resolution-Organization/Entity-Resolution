@@ -62,13 +62,6 @@ services:
       - ./cache:/app/cache
       - ./scripts:/app/scripts
       - ./config:/app/config
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     env_file: .env
     restart: "no"
 
