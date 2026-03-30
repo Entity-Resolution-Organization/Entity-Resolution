@@ -222,6 +222,6 @@ jobs:
 
       - name: Upload pipeline.yaml to GCS
         run: |
-          gsutil cp pipeline.yaml \
+          gcloud storage cp pipeline.yaml \
             gs://entity-resolution-bucket-1/pipelines/pipeline.yaml
           echo "Uploaded → gs://entity-resolution-bucket-1/pipelines/pipeline.yaml"
