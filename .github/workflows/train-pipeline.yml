@@ -218,7 +218,7 @@ jobs:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Compile pipeline
-        run: python scripts/pipeline.py --compile --output pipeline.yaml
+        run: python pipeline.py --compile --output pipeline.yaml
 
       - name: Upload pipeline.yaml to GCS
         run: |

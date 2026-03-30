@@ -3,7 +3,7 @@
 # Services: mlflow, trainer
 #
 # Trigger training runs with:
-#   docker compose run --rm trainer python scripts/pipeline.py --run \
+#   docker compose run --rm trainer python pipeline.py --run \
 #     --mlflow-uri http://<VM-EXTERNAL-IP>:5000
 # =============================================================================
 
@@ -41,11 +41,11 @@ services:
   # Scripts are volume-mounted so changes are picked up without rebuilding.
   #
   # Compile + upload pipeline:
-  #   docker compose run --rm trainer python scripts/pipeline.py --compile --upload \
+  #   docker compose run --rm trainer python pipeline.py --compile --upload \
   #     --mlflow-uri http://<VM-EXTERNAL-IP>:5000
   #
   # Submit a training run:
-  #   docker compose run --rm trainer python scripts/pipeline.py --run \
+  #   docker compose run --rm trainer python pipeline.py --run \
   #     --mlflow-uri http://<VM-EXTERNAL-IP>:5000
   # ---------------------------------------------------------------------------
   trainer:
