@@ -9,7 +9,6 @@
 
 x-common-env: &common-env
   CONFIG_PATH: config/training_config.yaml
-  MLFLOW_TRACKING_URI: http://mlflow:5000
   GCP_PROJECT_ID: entity-resolution-487121
   GCP_REGION: us-central1
 

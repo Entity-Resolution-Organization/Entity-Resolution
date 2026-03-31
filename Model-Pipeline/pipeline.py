@@ -24,7 +24,7 @@ Inter-component data passing:
 Usage:
     python pipeline.py --compile
     python pipeline.py --compile --upload
-    python pipeline.py --run --mlflow-uri http://<AIRFLOW_VM_IP>:5000
+    python pipeline.py --run
 
 Dependencies:
     kfp==2.7.0
@@ -39,6 +39,7 @@ from datetime import datetime
 from kfp import compiler, dsl
 from kfp.dsl import component
 from google.cloud import aiplatform
+from utils import get_mlflow_uri
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -353,12 +354,7 @@ def quality_gate_op(gcs_bucket: str) -> str:
 
 @component(base_image=TRAINER_IMAGE)
 def push_to_registry_op(mlflow_tracking_uri: str, gcs_bucket: str) -> str:
-    """
-    Downloads weights + pipeline results from GCS, calls push_to_registry.py,
-    then saves registry_log.json back to GCS for rollback_op to read.
-    Returns the pushed image URI forwarded to register_model_op.
-    """
-    import os, pathlib, subprocess, yaml
+    import json, os, pathlib, shutil, subprocess, yaml
     from google.cloud import storage
 
     client = storage.Client()
@@ -381,43 +377,125 @@ def push_to_registry_op(mlflow_tracking_uri: str, gcs_bucket: str) -> str:
         local.parent.mkdir(parents=True, exist_ok=True)
         blob.download_to_filename(str(local))
 
-    env = {
-        **os.environ,
-        "CONFIG_PATH":         "/app/config/training_config.yaml",
-        "MLFLOW_TRACKING_URI": mlflow_tracking_uri,
-    }
-    res = subprocess.run(
-        ["python", "/app/scripts/push_to_registry.py"],
-        env=env, text=True,
-    )
-    if res.returncode != 0:
-        raise RuntimeError(f"push_to_registry.py failed (exit {res.returncode})")
-
     with open("/app/config/training_config.yaml") as f:
         config = yaml.safe_load(f)
 
+    gcp = config["gcp"]
+    ar  = gcp["artifact_registry"]
     bucket_obj = client.bucket(gcs_bucket)
-    ar         = config["gcp"]["artifact_registry"]
     image_uri  = ""
 
     for entity_type in config["data"]["entity_types"]:
-        # Persist registry_log.json so rollback_op can re-tag on future runs
-        log_path = pathlib.Path(f"/app/models/{entity_type}/results/registry_log.json")
-        if log_path.exists():
-            bucket_obj.blob(
-                f"pipeline-results/{entity_type}/registry_log.json"
-            ).upload_from_filename(str(log_path))
-            print(f"[push_to_registry_op] Saved registry log → GCS")
+        # Quality gate check
+        metrics_path = pathlib.Path(f"/app/models/{entity_type}/results/test_metrics.json")
+        if not metrics_path.exists():
+            raise RuntimeError(f"test_metrics.json not found for {entity_type}")
+        metrics    = json.loads(metrics_path.read_text())
+        thresholds = config["validation"]
+        for metric, min_key in [("test_f1","min_f1"),("test_precision","min_precision"),
+                                 ("test_recall","min_recall"),("test_auc","min_auc")]:
+            if metrics.get(metric, 0) < thresholds[min_key]:
+                raise RuntimeError(f"Quality gate FAILED: {metric}={metrics[metric]}")
 
+        # Build context in GCS — Cloud Build needs source in GCS
         image_name = ar["image_name"].format(entity_type=entity_type)
         image_uri  = (
             f"{ar['location']}-docker.pkg.dev/"
-            f"{config['gcp']['project_id']}/{ar['repository']}/{image_name}:latest"
+            f"{gcp['project_id']}/{ar['repository']}/{image_name}"
         )
-        print(f"[push_to_registry_op] Pushed: {image_uri}")
 
-    return image_uri  # → register_model_op
+        tmp_dir = pathlib.Path(f"/tmp/er_push_{entity_type}")
+        tmp_dir.mkdir(parents=True, exist_ok=True)
 
+        # Copy weights, serve.py, config into build context
+        shutil.copytree(
+            f"/app/models/{entity_type}/final_model",
+            tmp_dir / "model_weights",
+            dirs_exist_ok=True,
+        )
+        shutil.copy("/app/scripts/serve.py", tmp_dir / "serve.py")
+        shutil.copytree("/app/config", tmp_dir / "config", dirs_exist_ok=True)
+
+        # Write Dockerfile
+        packages = ar["serving_packages"] + ["fastapi", "uvicorn[standard]", "pydantic"]
+        (tmp_dir / "Dockerfile").write_text(f"""FROM {ar["serving_base_image"]}
+WORKDIR /app
+RUN pip install --no-cache-dir {" ".join(packages)}
+COPY model_weights/ ./model_weights/
+COPY serve.py ./scripts/serve.py
+COPY config/ ./config/
+ENV MODEL_DIR=/app/model_weights
+ENV CONFIG_PATH=/app/config/training_config.yaml
+EXPOSE 8080
+CMD ["uvicorn", "scripts.serve:app", "--host", "0.0.0.0", "--port", "8080"]
+""")
+
+        # Upload build context to GCS
+        gcs_build_prefix = f"cloudbuild/{entity_type}"
+        for f in tmp_dir.rglob("*"):
+            if f.is_file():
+                blob_name = f"{gcs_build_prefix}/{f.relative_to(tmp_dir)}"
+                bucket_obj.blob(blob_name).upload_from_filename(str(f))
+        print(f"[push_to_registry_op] Build context → gs://{gcs_bucket}/{gcs_build_prefix}/")
+
+        # Get next version
+        list_result = subprocess.run(
+            ["gcloud", "artifacts", "docker", "images", "list", image_uri,
+             "--include-tags", "--format=json", f"--project={gcp['project_id']}"],
+            capture_output=True, text=True,
+        )
+        previous = None
+        new_version = "v1"
+        if list_result.returncode == 0 and list_result.stdout.strip():
+            try:
+                imgs = json.loads(list_result.stdout)
+                tags = [int(t[1:]) for img in imgs
+                        for t in img.get("tags","").split(",")
+                        if t.strip().startswith("v") and t.strip()[1:].isdigit()]
+                if tags:
+                    previous    = f"v{max(tags)}"
+                    new_version = f"v{max(tags)+1}"
+            except Exception:
+                pass
+
+        # Submit Cloud Build — no Docker daemon needed
+        build_result = subprocess.run([
+            "gcloud", "builds", "submit",
+            f"--tag={image_uri}:{new_version}",
+            f"--gcs-source-staging-dir=gs://{gcs_bucket}/cloudbuild-staging",
+            f"--project={gcp['project_id']}",
+            f"gs://{gcs_bucket}/{gcs_build_prefix}/",
+        ], capture_output=True, text=True)
+
+        print(build_result.stdout)
+        if build_result.returncode != 0:
+            print(build_result.stderr)
+            raise RuntimeError(f"Cloud Build failed for {entity_type}")
+
+        # Also tag as :latest
+        subprocess.run([
+            "gcloud", "artifacts", "docker", "tags", "add",
+            f"{image_uri}:{new_version}", f"{image_uri}:latest",
+            f"--project={gcp['project_id']}",
+        ], check=True)
+
+        # Save registry log
+        log = {
+            "entity_type":      entity_type,
+            "version":          new_version,
+            "previous_version": previous,
+            "image_uri":        f"{image_uri}:{new_version}",
+        }
+        log_path = pathlib.Path(f"/app/models/{entity_type}/results/registry_log.json")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(json.dumps(log, indent=2))
+        bucket_obj.blob(
+            f"pipeline-results/{entity_type}/registry_log.json"
+        ).upload_from_filename(str(log_path))
+
+        print(f"[push_to_registry_op] Pushed: {image_uri}:{new_version}")
+
+    return f"{image_uri}:latest"
 
 @component(base_image=TRAINER_IMAGE)
 def register_model_op(image_uri: str, gcs_bucket: str) -> str:
@@ -639,7 +717,7 @@ def alert_op(reason: str, mlflow_tracking_uri: str) -> None:
     pipeline_root=PIPELINE_ROOT,
 )
 def er_model_pipeline(
-    mlflow_tracking_uri: str   = "http://34.123.172.119:5000",
+    mlflow_tracking_uri: str   = "",
     gcs_bucket:          str   = GCS_BUCKET,
     rollback_threshold:  float = 0.02,
     deploy_machine_type: str   = "n1-standard-4",
@@ -786,10 +864,10 @@ def upload_to_gcs(
     print(f"[upload] RunPipelineJobOperator template_path='{gcs_path}'")
 
 
-def run_pipeline(
-    mlflow_tracking_uri: str,
-    pipeline_yaml:       str = PIPELINE_YAML,
-) -> None:
+def run_pipeline(pipeline_yaml: str = PIPELINE_YAML,) -> None:
+    mlflow_uri = get_mlflow_uri(GCS_BUCKET)
+    print(f"[run] MLflow URI for bucket {GCS_BUCKET}: {mlflow_uri}")
+
     aiplatform.init(
         project=PROJECT_ID,
         location=REGION,
@@ -801,7 +879,7 @@ def run_pipeline(
         template_path=pipeline_yaml,
         pipeline_root=PIPELINE_ROOT,
         parameter_values={
-            "mlflow_tracking_uri": mlflow_tracking_uri,
+            "mlflow_tracking_uri": mlflow_uri,
             "gcs_bucket":          GCS_BUCKET,
             "rollback_threshold":  0.02,
             "deploy_machine_type": "n1-standard-4",
@@ -829,16 +907,12 @@ if __name__ == "__main__":
 Examples:
   python pipeline.py --compile
   python pipeline.py --compile --upload
-  python pipeline.py --run --mlflow-uri http://34.123.172.119:5000
+  python pipeline.py --run
         """,
     )
     parser.add_argument("--compile", action="store_true", help="Compile to pipeline.yaml")
     parser.add_argument("--upload",  action="store_true", help="Upload pipeline.yaml to GCS")
     parser.add_argument("--run",     action="store_true", help="Compile + upload + submit to Vertex AI")
-    parser.add_argument(
-        "--mlflow-uri",
-        default=os.environ.get("MLFLOW_TRACKING_URI", "http://34.123.172.119:5000"),
-    )
     parser.add_argument("--output", default=PIPELINE_YAML)
     args = parser.parse_args()
 
@@ -850,4 +924,4 @@ Examples:
         if args.upload or args.run:
             upload_to_gcs(args.output)
         if args.run:
-            run_pipeline(mlflow_tracking_uri=args.mlflow_uri, pipeline_yaml=args.output)
+            run_pipeline(pipeline_yaml=args.output)
