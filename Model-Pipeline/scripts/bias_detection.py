@@ -7,8 +7,15 @@ and generates bias_report.json + plots.
 
 Outputs:
     models/{entity_type}/results/bias_report.json
-    models/{entity_type}/plots/bias_f1_by_slice.png
-    models/{entity_type}/plots/bias_disparity_heatmap.png
+    models/{entity_type}/plots/bias_f1_{slice_col}.png
+    models/{entity_type}/plots/bias_heatmap_{slice_col}.png
+
+Fixes vs previous version:
+    1. MLflow tracking URI respects MLFLOW_TRACKING_URI env var — required
+       for Vertex AI components which cannot resolve 'mlflow' hostname.
+       (No tokenization or NaN fixes needed — this script reads from
+       test_predictions.csv and reapplies the threshold itself, so it is
+       insulated from the input format issues in evaluate.py.)
 """
 
 import json
@@ -22,8 +29,12 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import yaml
-from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score
-
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+)
 
 DEFAULT_CONFIG_PATH = "config/training_config.yaml"
 
@@ -50,7 +61,11 @@ class BiasDetector:
         os.makedirs(self.results_dir, exist_ok=True)
         os.makedirs(self.plots_dir,   exist_ok=True)
 
-        self.bias_cfg = config["bias_detection"]
+        self.bias_cfg  = config["bias_detection"]
+        self.threshold = config["validation"]["classification_threshold"]
+
+        print(f"[Bias] entity_type : {self.entity_type}")
+        print(f"[Bias] threshold   : {self.threshold}")
 
     # ------------------------------------------------------------------
     # Load predictions
@@ -74,22 +89,22 @@ class BiasDetector:
     def compute_slice_metrics(
         self, df: pd.DataFrame, slice_col: str
     ) -> dict:
-        """Compute F1/precision/recall per unique value of slice_col."""
-        slices     = {}
-        min_size   = self.bias_cfg["min_slice_size"]
-        col_label  = self.config["data"]["columns"]["label"]
+        """Compute F1/precision/recall/accuracy per unique value of slice_col."""
+        slices   = {}
+        min_size = self.bias_cfg["min_slice_size"]
+        col_lbl  = self.config["data"]["columns"]["label"]
 
         for value in df[slice_col].unique():
             subset = df[df[slice_col] == value]
+
             if len(subset) < min_size:
                 print(f"[Bias]   Skipping {slice_col}={value} "
                       f"— only {len(subset)} samples (min={min_size})")
                 continue
 
-            true  = subset[col_label].values
-            pred  = subset["predicted_label"].values
+            true = subset[col_lbl].values
+            pred = subset["predicted_label"].values
 
-            # Skip slices with only one class (can't compute meaningful metrics)
             if len(np.unique(true)) < 2:
                 print(f"[Bias]   Skipping {slice_col}={value} — single class")
                 continue
@@ -102,12 +117,13 @@ class BiasDetector:
                 "precision":  float(precision_score(true, pred, zero_division=0)),
                 "recall":     float(recall_score(true, pred, zero_division=0)),
             }
+            s = slices[str(value)]
             print(
-                f"[Bias]   {slice_col}={value:20s} | "
-                f"n={len(subset):5d} | "
-                f"F1={slices[str(value)]['f1']:.4f} | "
-                f"P={slices[str(value)]['precision']:.4f} | "
-                f"R={slices[str(value)]['recall']:.4f}"
+                f"[Bias]   {slice_col}={str(value):20s} | "
+                f"n={s['n_samples']:5d} | "
+                f"F1={s['f1']:.4f} | "
+                f"P={s['precision']:.4f} | "
+                f"R={s['recall']:.4f}"
             )
 
         return slices
@@ -118,18 +134,19 @@ class BiasDetector:
 
     def check_disparity(self, slices: dict, metric: str = "f1") -> dict:
         """
-        Check if max - min metric across slices exceeds threshold.
-        Returns disparity info dict.
+        Check whether max - min metric value across slices exceeds threshold.
+        Always returns 'threshold' key so pipeline components can read it
+        without conditional logic.
         """
-        values = [s[metric] for s in slices.values() if s[metric] > 0]
-        threshold = self.bias_cfg[f"max_{metric}_disparity"]
+        values    = [s[metric] for s in slices.values() if s[metric] > 0]
+        threshold = float(self.bias_cfg[f"max_{metric}_disparity"])
 
         if len(values) < 2:
             return {
                 "bias_detected": False,
                 "reason":        "insufficient slices",
                 f"{metric}_disparity": 0.0,
-                "threshold":     float(threshold),
+                "threshold":           threshold,
             }
 
         max_val   = max(values)
@@ -141,7 +158,7 @@ class BiasDetector:
             f"max_{metric}":       float(max_val),
             f"min_{metric}":       float(min_val),
             f"{metric}_disparity": float(disparity),
-            "threshold":           float(threshold),
+            "threshold":           threshold,
         }
 
     # ------------------------------------------------------------------
@@ -151,12 +168,15 @@ class BiasDetector:
     def plot_f1_by_slice(self, slices: dict, slice_col: str) -> str:
         names  = list(slices.keys())
         f1s    = [slices[n]["f1"] for n in names]
-        colors = ["#1D9E75" if f >= 0.75 else "#D85A30" for f in f1s]
+        min_f1 = self.config["validation"]["min_f1"]
+        colors = ["#1D9E75" if f >= min_f1 else "#D85A30" for f in f1s]
 
         fig, ax = plt.subplots(figsize=(max(8, len(names) * 1.2), 5))
         bars = ax.bar(names, f1s, color=colors, edgecolor="none")
-        ax.axhline(0.75, color="#888780", linestyle="--",
-                   linewidth=1, label="min F1 threshold (0.75)")
+        ax.axhline(
+            min_f1, color="#888780", linestyle="--", linewidth=1,
+            label=f"min F1 threshold ({min_f1})",
+        )
         ax.set_ylim(0, 1.05)
         ax.set_xlabel(slice_col)
         ax.set_ylabel("F1 score")
@@ -165,15 +185,17 @@ class BiasDetector:
         plt.xticks(rotation=30, ha="right")
 
         for bar, val in zip(bars, f1s):
-            ax.text(bar.get_x() + bar.get_width() / 2,
-                    bar.get_height() + 0.01,
-                    f"{val:.3f}", ha="center", va="bottom", fontsize=10)
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.01,
+                f"{val:.3f}", ha="center", va="bottom", fontsize=10,
+            )
 
         plt.tight_layout()
         path = os.path.join(self.plots_dir, f"bias_f1_{slice_col}.png")
         plt.savefig(path, dpi=150)
         plt.close()
-        print(f"[Bias] Plot saved → {path}")
+        print(f"[Bias] F1 plot → {path}")
         return path
 
     def plot_metrics_heatmap(self, slices: dict, slice_col: str) -> str:
@@ -192,7 +214,7 @@ class BiasDetector:
         path = os.path.join(self.plots_dir, f"bias_heatmap_{slice_col}.png")
         plt.savefig(path, dpi=150)
         plt.close()
-        print(f"[Bias] Heatmap saved → {path}")
+        print(f"[Bias] Heatmap → {path}")
         return path
 
     # ------------------------------------------------------------------
@@ -200,28 +222,21 @@ class BiasDetector:
     # ------------------------------------------------------------------
 
     def detect(self) -> dict:
-        """
-        Full bias detection pipeline for one entity type.
-        Returns bias_report dict.
-        """
         df = self.load_predictions()
 
-        # Always reapply threshold from config — CSV predicted_label
-        # may have been generated with a different threshold
-        threshold = self.config["validation"]["classification_threshold"]
-        df["predicted_label"] = (
-            df["predicted_prob"] >= threshold
-        ).astype(int)
-        print(f"[Bias] Applied threshold={threshold} to predicted_prob")
+        # Always reapply threshold from config — do not trust CSV predicted_label
+        # since it may have been generated with a different threshold value.
+        df["predicted_label"] = (df["predicted_prob"] >= self.threshold).astype(int)
+        print(f"[Bias] Reapplied threshold={self.threshold} to predicted_prob")
 
-        slice_cols  = self.bias_cfg["slices"]
-        report      = {
-            "entity_type":  self.entity_type,
-            "n_samples":    len(df),
-            "threshold":    threshold,
-            "slices":       {},
-            "disparity":    {},
-            "bias_detected": False,
+        slice_cols = self.bias_cfg["slices"]
+        report = {
+            "entity_type":            self.entity_type,
+            "n_samples":              len(df),
+            "threshold":              self.threshold,
+            "slices":                 {},
+            "disparity":              {},
+            "bias_detected":          False,
             "mitigation_suggestions": [],
         }
         plot_paths = []
@@ -240,7 +255,7 @@ class BiasDetector:
 
             disparity = self.check_disparity(slices, "f1")
 
-            report["slices"][slice_col]   = slices
+            report["slices"][slice_col]    = slices
             report["disparity"][slice_col] = disparity
 
             max_f1_disparity = self.bias_cfg["max_f1_disparity"]
@@ -249,8 +264,8 @@ class BiasDetector:
                 report["bias_detected"] = True
                 report["mitigation_suggestions"].append(
                     f"F1 disparity of {disparity['f1_disparity']:.3f} across "
-                    f"{slice_col} exceeds threshold {max_f1_disparity}. "
-                    f"Consider re-sampling under-performing slices or adjusting "
+                    f"'{slice_col}' exceeds threshold {max_f1_disparity}. "
+                    f"Consider re-sampling under-performing slices or applying "
                     f"per-slice decision thresholds."
                 )
                 print(
@@ -260,12 +275,11 @@ class BiasDetector:
                 )
             else:
                 print(
-                    f"[Bias] OK — {slice_col} disparity="
-                    f"{disparity.get('f1_disparity', 0):.3f} "
+                    f"[Bias] OK — {slice_col} "
+                    f"disparity={disparity.get('f1_disparity', 0):.3f} "
                     f"<= threshold={max_f1_disparity}"
                 )
 
-            # Plots
             plot_paths.append(self.plot_f1_by_slice(slices, slice_col))
             plot_paths.append(self.plot_metrics_heatmap(slices, slice_col))
 
@@ -273,10 +287,11 @@ class BiasDetector:
         report_path = os.path.join(self.results_dir, "bias_report.json")
         with open(report_path, "w") as f:
             json.dump(report, f, indent=2)
-        print(f"\n[Bias] Report saved → {report_path}")
+        print(f"\n[Bias] Report → {report_path}")
 
-        # Log to MLflow
-        mlflow.set_tracking_uri(self.config["mlflow"]["tracking_uri"])
+        mlflow.set_tracking_uri(
+            os.environ.get("MLFLOW_TRACKING_URI") or self.config["mlflow"]["tracking_uri"]
+        )
         mlflow.set_experiment(self.config["mlflow"]["experiment_name"])
 
         with mlflow.start_run(
@@ -287,15 +302,12 @@ class BiasDetector:
             for p in plot_paths:
                 mlflow.log_artifact(p, artifact_path="bias/plots")
 
-            # Log per-slice F1s as metrics
             for slice_col, slices in report["slices"].items():
-                for slice_val, metrics in slices.items():
+                for slice_val, m in slices.items():
                     key = f"f1_{slice_col}_{slice_val}".replace(" ", "_")[:250]
-                    mlflow.log_metric(key, metrics["f1"])
+                    mlflow.log_metric(key, m["f1"])
 
-            mlflow.log_metric(
-                "bias_detected", int(report["bias_detected"])
-            )
+            mlflow.log_metric("bias_detected", int(report["bias_detected"]))
 
         return report
 

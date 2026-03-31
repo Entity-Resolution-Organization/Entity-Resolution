@@ -23,6 +23,13 @@ RUN pip install --no-cache-dir \
     google-cloud-aiplatform \
     google-cloud-storage
 
+ENV TRANSFORMERS_CACHE=/app/cache
+RUN python -c "
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+AutoTokenizer.from_pretrained('microsoft/deberta-v3-base', cache_dir='/app/cache')
+AutoModelForSequenceClassification.from_pretrained('microsoft/deberta-v3-base', cache_dir='/app/cache', num_labels=2)
+"
+
 # Copy pipeline code
 COPY scripts/ ./scripts/
 COPY config/  ./config/
