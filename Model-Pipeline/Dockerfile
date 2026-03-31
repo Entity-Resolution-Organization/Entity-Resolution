@@ -22,11 +22,9 @@ RUN pip install --no-cache-dir \
 
 # Pre-bake DeBERTa weights
 ENV TRANSFORMERS_CACHE=/app/cache
-RUN python -c "
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-AutoTokenizer.from_pretrained('microsoft/deberta-v3-base', cache_dir='/app/cache')
-AutoModelForSequenceClassification.from_pretrained('microsoft/deberta-v3-base', cache_dir='/app/cache', num_labels=2)
-"
+RUN python -c "from transformers import AutoTokenizer, AutoModelForSequenceClassification; \
+    AutoTokenizer.from_pretrained('microsoft/deberta-v3-base', cache_dir='/app/cache'); \
+    AutoModelForSequenceClassification.from_pretrained('microsoft/deberta-v3-base', cache_dir='/app/cache', num_labels=2)"
 
 # Copy code
 COPY scripts/    ./scripts/
