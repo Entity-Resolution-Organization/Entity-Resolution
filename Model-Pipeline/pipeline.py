@@ -40,7 +40,6 @@ from kfp import compiler, dsl
 from kfp.dsl import component
 from google.cloud import aiplatform
 from utils import get_mlflow_uri
-import tarfile
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -324,7 +323,7 @@ def rollback_op(mlflow_tracking_uri: str) -> None:
 
 @component(base_image=TRAINER_IMAGE)
 def push_to_registry_op(mlflow_tracking_uri: str, gcs_bucket: str) -> str:
-    import json, os, pathlib, shutil, subprocess, yaml
+    import json, os, pathlib, shutil, subprocess, yaml, tarfile
     from google.cloud import storage
 
     client = storage.Client()
