@@ -421,12 +421,11 @@ CMD ["uvicorn", "scripts.serve:app", "--host", "0.0.0.0", "--port", "8080"]
         tar_path = pathlib.Path(f"/tmp/er_push_{entity_type}.tar.gz")
         with tarfile.open(tar_path, "w:gz") as tar:
             tar.add(tmp_dir, arcname=".")
-
-        # Upload tar instead of directory
         tar_blob = f"cloudbuild/{entity_type}/source.tar.gz"
         bucket_obj.blob(tar_blob).upload_from_filename(str(tar_path))
+        print(f"[push_to_registry_op] Build context → gs://{gcs_bucket}/{tar_blob}")
 
-        # Submit using the tar
+        # Replace gcloud builds submit with:
         build_result = subprocess.run([
             "gcloud", "builds", "submit",
             f"--tag={image_uri}:{new_version}",
