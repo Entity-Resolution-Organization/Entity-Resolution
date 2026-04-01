@@ -40,6 +40,7 @@ from kfp import compiler, dsl
 from kfp.dsl import component
 from google.cloud import aiplatform
 from utils import get_mlflow_uri
+import tarfile
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -416,13 +417,21 @@ CMD ["uvicorn", "scripts.serve:app", "--host", "0.0.0.0", "--port", "8080"]
             except Exception:
                 pass
 
-        # Submit Cloud Build — no Docker daemon needed
+        # Submit Cloud Build
+        tar_path = pathlib.Path(f"/tmp/er_push_{entity_type}.tar.gz")
+        with tarfile.open(tar_path, "w:gz") as tar:
+            tar.add(tmp_dir, arcname=".")
+
+        # Upload tar instead of directory
+        tar_blob = f"cloudbuild/{entity_type}/source.tar.gz"
+        bucket_obj.blob(tar_blob).upload_from_filename(str(tar_path))
+
+        # Submit using the tar
         build_result = subprocess.run([
             "gcloud", "builds", "submit",
             f"--tag={image_uri}:{new_version}",
-            f"--gcs-source-staging-dir=gs://{gcs_bucket}/cloudbuild-staging",
             f"--project={gcp['project_id']}",
-            f"gs://{gcs_bucket}/{gcs_build_prefix}/",
+            f"gs://{gcs_bucket}/{tar_blob}",
         ], capture_output=True, text=True)
 
         print(build_result.stdout)
