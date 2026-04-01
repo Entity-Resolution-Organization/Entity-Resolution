@@ -175,12 +175,12 @@ def sensitivity_analysis_op(mlflow_tracking_uri: str, gcs_bucket: str) -> str:
 
 
 @component(base_image=TRAINER_IMAGE)
-def rollback_check_op(
+def rollback_and_gate_op(
     mlflow_tracking_uri: str,
     gcs_bucket: str,
     rollback_threshold: float = 0.02,
 ) -> str:
-    """Returns 'GO' or 'ROLLBACK'."""
+    """Returns 'GO', 'NO-GO', or 'ROLLBACK'."""
     import json, pathlib, yaml
     from google.cloud import storage
     import mlflow
@@ -198,47 +198,65 @@ def rollback_check_op(
     with open("/app/config/training_config.yaml") as f:
         config = yaml.safe_load(f)
 
+    thresholds = config["validation"]
+
+    # --- Rollback check ---
     mlflow.set_tracking_uri(mlflow_tracking_uri)
     rollback_needed = False
 
     for entity_type in config["data"]["entity_types"]:
         metrics_path = metrics_dir / entity_type / "results" / "test_metrics.json"
         if not metrics_path.exists():
-            print(f"[rollback_check_op] No metrics for {entity_type} — skipping")
+            print(f"[combined] No metrics for {entity_type} — skipping rollback check")
             continue
 
-        current_f1 = json.loads(metrics_path.read_text()).get("test_f1", 0)
+        metrics    = json.loads(metrics_path.read_text())
+        current_f1 = metrics.get("test_f1", 0)
 
         experiment = mlflow.get_experiment_by_name(config["mlflow"]["experiment_name"])
-        if experiment is None:
-            print(f"[rollback_check_op] No experiment found — first run, GO")
-            continue
+        if experiment:
+            runs = mlflow.search_runs(
+                experiment_ids=[experiment.experiment_id],
+                filter_string=(
+                    f"tags.entity_type = '{entity_type}' "
+                    f"and tags.quality_gate = 'GO'"
+                ),
+                order_by=["metrics.test_f1 DESC"],
+                max_results=1,
+            )
+            if not runs.empty:
+                best_f1     = runs.iloc[0].get("metrics.test_f1", 0)
+                degradation = best_f1 - current_f1
+                print(f"[combined] {entity_type}: best={best_f1:.4f} current={current_f1:.4f} drop={degradation:.4f}")
+                if degradation > rollback_threshold:
+                    rollback_needed = True
 
-        runs = mlflow.search_runs(
-            experiment_ids=[experiment.experiment_id],
-            filter_string=(
-                f"tags.entity_type = '{entity_type}' "
-                f"and tags.quality_gate = 'GO'"
-            ),
-            order_by=["metrics.test_f1 DESC"],
-            max_results=1,
-        )
-        if runs.empty:
-            print(f"[rollback_check_op] No previous GO run for {entity_type} — GO")
-            continue
+    if rollback_needed:
+        print("[combined] → ROLLBACK")
+        return "ROLLBACK"
 
-        best_f1     = runs.iloc[0].get("metrics.test_f1", 0)
-        degradation = best_f1 - current_f1
-        print(
-            f"[rollback_check_op] {entity_type}: "
-            f"best={best_f1:.4f} current={current_f1:.4f} drop={degradation:.4f}"
-        )
-        if degradation > rollback_threshold:
-            rollback_needed = True
+    # --- Quality gate ---
+    for entity_type in config["data"]["entity_types"]:
+        metrics_path = metrics_dir / entity_type / "results" / "test_metrics.json"
+        if not metrics_path.exists():
+            print(f"[combined] No metrics for {entity_type} — NO-GO")
+            return "NO-GO"
 
-    result = "ROLLBACK" if rollback_needed else "GO"
-    print(f"[rollback_check_op] → {result}")
-    return result
+        metrics = json.loads(metrics_path.read_text())
+        checks  = {
+            "f1":        (metrics.get("test_f1",        0.0), thresholds["min_f1"]),
+            "precision": (metrics.get("test_precision", 0.0), thresholds["min_precision"]),
+            "recall":    (metrics.get("test_recall",    0.0), thresholds["min_recall"]),
+            "auc":       (metrics.get("test_auc",       0.0), thresholds["min_auc"]),
+        }
+        for name, (val, thr) in checks.items():
+            print(f"  {name}: {val:.4f} >= {thr} → {'PASS' if val >= thr else 'FAIL'}")
+            if val < thr:
+                print("[combined] → NO-GO")
+                return "NO-GO"
+
+    print("[combined] → GO")
+    return "GO"
 
 
 @component(base_image=TRAINER_IMAGE)
@@ -303,55 +321,6 @@ def rollback_op(mlflow_tracking_uri: str) -> None:
             mlflow.set_tag("rollback_to", previous or "none")
             mlflow.set_tag("reason",      "F1 degradation > threshold")
 
-
-@component(base_image=TRAINER_IMAGE)
-def quality_gate_op(gcs_bucket: str) -> str:
-    """Returns 'GO' or 'NO-GO' based on validation thresholds in config."""
-    import json, pathlib, yaml
-    from google.cloud import storage
-
-    with open("/app/config/training_config.yaml") as f:
-        config = yaml.safe_load(f)
-
-    thresholds  = config["validation"]
-    client      = storage.Client()
-    metrics_dir = pathlib.Path("/tmp/models")
-
-    for blob in client.list_blobs(gcs_bucket, prefix="pipeline-results/models/"):
-        if "test_metrics.json" not in blob.name:
-            continue
-        rel   = blob.name.replace("pipeline-results/models/", "", 1)
-        local = metrics_dir / rel
-        local.parent.mkdir(parents=True, exist_ok=True)
-        blob.download_to_filename(str(local))
-
-    for entity_type in config["data"]["entity_types"]:
-        metrics_path = metrics_dir / entity_type / "results" / "test_metrics.json"
-        if not metrics_path.exists():
-            print(f"[quality_gate_op] No metrics for {entity_type} — NO-GO")
-            return "NO-GO"
-
-        metrics = json.loads(metrics_path.read_text())
-        checks  = {
-            "f1":        (metrics.get("test_f1",        0.0), thresholds["min_f1"]),
-            "precision": (metrics.get("test_precision", 0.0), thresholds["min_precision"]),
-            "recall":    (metrics.get("test_recall",    0.0), thresholds["min_recall"]),
-            "auc":       (metrics.get("test_auc",       0.0), thresholds["min_auc"]),
-        }
-        all_pass = True
-        for name, (val, thr) in checks.items():
-            ok = val >= thr
-            print(f"  {name}: {val:.4f} >= {thr} → {'PASS' if ok else 'FAIL'}")
-            if not ok:
-                all_pass = False
-
-        if not all_pass:
-            return "NO-GO"
-
-    print("[quality_gate_op] → GO")
-    return "GO"
-
-
 @component(base_image=TRAINER_IMAGE)
 def push_to_registry_op(mlflow_tracking_uri: str, gcs_bucket: str) -> str:
     import json, os, pathlib, shutil, subprocess, yaml
@@ -386,17 +355,6 @@ def push_to_registry_op(mlflow_tracking_uri: str, gcs_bucket: str) -> str:
     image_uri  = ""
 
     for entity_type in config["data"]["entity_types"]:
-        # Quality gate check
-        metrics_path = pathlib.Path(f"/app/models/{entity_type}/results/test_metrics.json")
-        if not metrics_path.exists():
-            raise RuntimeError(f"test_metrics.json not found for {entity_type}")
-        metrics    = json.loads(metrics_path.read_text())
-        thresholds = config["validation"]
-        for metric, min_key in [("test_f1","min_f1"),("test_precision","min_precision"),
-                                 ("test_recall","min_recall"),("test_auc","min_auc")]:
-            if metrics.get(metric, 0) < thresholds[min_key]:
-                raise RuntimeError(f"Quality gate FAILED: {metric}={metrics[metric]}")
-
         # Build context in GCS — Cloud Build needs source in GCS
         image_name = ar["image_name"].format(entity_type=entity_type)
         image_uri  = (
@@ -783,62 +741,51 @@ def er_model_pipeline(
         .after(evaluate_task)
     )
 
-    # ── 4. Rollback check (waits for both parallel tasks) ─────────────────────
-    rollback_check_task = (
-        rollback_check_op(
+    # ── 4. Rollback + quality gate (waits for both parallel tasks) ────────────
+    combined_task = (
+        rollback_and_gate_op(
             mlflow_tracking_uri=mlflow_tracking_uri,
             gcs_bucket=gcs_bucket,
             rollback_threshold=rollback_threshold,
         )
-        .set_display_name("rollback_check")
+        .set_display_name("rollback_and_quality_gate")
         .after(bias_task, sensitivity_task)
     )
 
-    # ── 5a. Rollback branch ───────────────────────────────────────────────────
-    with dsl.If(rollback_check_task.output == "ROLLBACK", name="if-rollback"):
+    # ── 5. Flat branches — no nesting ─────────────────────────────────────────
+    with dsl.If(combined_task.output == "ROLLBACK", name="if-rollback"):
         rollback_task = rollback_op(
             mlflow_tracking_uri=mlflow_tracking_uri,
         ).set_display_name("rollback")
-
         alert_op(
             reason="Rollback triggered — F1 degradation exceeded threshold.",
             mlflow_tracking_uri=mlflow_tracking_uri,
         ).set_display_name("alert_rollback").after(rollback_task)
 
-    # ── 5b. GO branch ─────────────────────────────────────────────────────────
-    with dsl.If(rollback_check_task.output == "GO", name="if-go"):
+    with dsl.If(combined_task.output == "NO-GO", name="if-no-go"):
+        alert_op(
+            reason="Quality gate NO-GO — one or more metrics below threshold.",
+            mlflow_tracking_uri=mlflow_tracking_uri,
+        ).set_display_name("alert_quality_gate")
 
-        quality_gate_task = quality_gate_op(
+    with dsl.If(combined_task.output == "GO", name="if-push"):
+        push_task = push_to_registry_op(
+            mlflow_tracking_uri=mlflow_tracking_uri,
             gcs_bucket=gcs_bucket,
-        ).set_display_name("quality_gate")
+        ).set_display_name("push_to_registry")
 
-        # NO-GO branch
-        with dsl.If(quality_gate_task.output == "NO-GO", name="if-no-go"):
-            alert_op(
-                reason="Quality gate NO-GO — one or more metrics below threshold.",
-                mlflow_tracking_uri=mlflow_tracking_uri,
-            ).set_display_name("alert_quality_gate")
+        register_task = register_model_op(
+            image_uri=push_task.output,
+            gcs_bucket=gcs_bucket,
+        ).set_display_name("register_model")
 
-        # GO branch → push → register → deploy
-        with dsl.If(quality_gate_task.output == "GO", name="if-push"):
-
-            push_task = push_to_registry_op(
-                mlflow_tracking_uri=mlflow_tracking_uri,
-                gcs_bucket=gcs_bucket,
-            ).set_display_name("push_to_registry")
-
-            register_task = register_model_op(
-                image_uri=push_task.output,
-                gcs_bucket=gcs_bucket,
-            ).set_display_name("register_model")
-
-            deploy_to_endpoint_op(
-                model_resource_name=register_task.output,
-                gcs_bucket=gcs_bucket,
-                machine_type=deploy_machine_type,
-                min_replica_count=min_replicas,
-                max_replica_count=max_replicas,
-            ).set_display_name("deploy_to_endpoint")
+        deploy_to_endpoint_op(
+            model_resource_name=register_task.output,
+            gcs_bucket=gcs_bucket,
+            machine_type=deploy_machine_type,
+            min_replica_count=min_replicas,
+            max_replica_count=max_replicas,
+        ).set_display_name("deploy_to_endpoint")
 
 
 # =============================================================================
