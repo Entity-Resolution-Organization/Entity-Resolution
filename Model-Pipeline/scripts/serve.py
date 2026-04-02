@@ -178,10 +178,7 @@ def _load_model():
     _model.to(_device)
     _model.eval()
 
-    _tokenizer = AutoTokenizer.from_pretrained(
-        BASE_MODEL,
-        cache_dir=CONFIG["model"].get("cache_dir"),
-    )
+    _tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
 
     _ready = True
     log.info("Model ready.")

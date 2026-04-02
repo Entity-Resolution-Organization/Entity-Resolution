@@ -385,6 +385,7 @@ COPY config/ ./config/
 ENV MODEL_DIR=/app/model_weights
 ENV CONFIG_PATH=/app/config/training_config.yaml
 EXPOSE 8080
+ENV PYTHONPATH=/app
 CMD ["uvicorn", "scripts.serve:app", "--host", "0.0.0.0", "--port", "8080"]
 """)
 
