@@ -275,12 +275,13 @@ class EntityResolutionTrainer:
         )
 
         lora_cfg = LoraConfig(
-            task_type      = TaskType.SEQ_CLS,
-            r              = self.config["lora"]["r"],
-            lora_alpha     = self.config["lora"]["lora_alpha"],
-            lora_dropout   = self.config["lora"]["lora_dropout"],
-            target_modules = self.config["lora"]["target_modules"],
-            bias           = self.config["lora"]["bias"],
+            task_type       = TaskType.SEQ_CLS,
+            r               = self.config["lora"]["r"],
+            lora_alpha      = self.config["lora"]["lora_alpha"],
+            lora_dropout    = self.config["lora"]["lora_dropout"],
+            target_modules  = self.config["lora"]["target_modules"],
+            bias            = self.config["lora"]["bias"],
+            modules_to_save = self.config["lora"].get("modules_to_save", ["classifier", "pooler"]),
         )
 
         model = get_peft_model(base, lora_cfg)

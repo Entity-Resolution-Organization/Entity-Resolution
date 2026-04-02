@@ -24,6 +24,9 @@ lora:
     - "value_proj"
   bias: "none"
   task_type: "SEQ_CLS"
+  modules_to_save:
+    - "classifier"
+    - "pooler"
 
 # -----------------------------------------------------------------------------
 # Training  (used by train.py)
