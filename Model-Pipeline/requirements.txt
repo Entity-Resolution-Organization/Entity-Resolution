@@ -1,7 +1,7 @@
 # =============================================================================
 # Entity Resolution Model Pipeline - Requirements
 
-# Training essentials only
+# Training
 transformers==4.36.2
 peft==0.7.1
 accelerate==0.25.0
@@ -23,3 +23,8 @@ seaborn==0.13.2
 # Config
 pyyaml==6.0.1
 python-dotenv==1.0.0
+
+# Serving
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.0.0

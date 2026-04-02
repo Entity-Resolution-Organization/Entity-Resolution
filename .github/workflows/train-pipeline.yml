@@ -2,7 +2,7 @@ name: Model Pipeline CI
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main, dev, model-pipeline-migration]
     paths:
       - "Model-Pipeline/**"
       - ".github/workflows/train-pipeline.yml"
@@ -188,4 +188,40 @@ jobs:
         run: |
           docker push ${{ steps.tag.outputs.tag }}
           docker push ${{ env.IMAGE }}:latest
-          echo "Image pushed — Airflow DAG will use :latest for next training run"
+
+# =============================================================================
+# Job 5 — Compile and upload KFP pipeline
+# Runs after Docker push so pipeline.yaml always references the latest image.
+# Airflow RunPipelineJobOperator reads pipeline.yaml from GCS to trigger runs.
+# =============================================================================
+  compile-pipeline:
+    name: Compile and upload pipeline
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    defaults:
+      run:
+        working-directory: Model-Pipeline
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install KFP and GCP SDK
+        run: pip install kfp==2.7.0 google-cloud-aiplatform google-cloud-storage
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Compile pipeline
+        run: python pipeline.py --compile --output pipeline.yaml
+
+      - name: Upload pipeline.yaml to GCS
+        run: |
+          gcloud storage cp pipeline.yaml \
+            gs://entity-resolution-bucket-1/pipelines/pipeline.yaml
+          echo "Uploaded → gs://entity-resolution-bucket-1/pipelines/pipeline.yaml"
