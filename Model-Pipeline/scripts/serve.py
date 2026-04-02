@@ -39,13 +39,13 @@ Startup sequence:
     4. Mark server as ready → /health returns 200
 """
 
-import os
 import logging
+import math
+import os
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List
 
 import numpy as np
-import pandas as pd
 import torch
 import yaml
 from fastapi import FastAPI, HTTPException
@@ -71,28 +71,33 @@ THRESHOLD = float(
         CONFIG["validation"]["classification_threshold"],
     )
 )
-BASE_MODEL  = CONFIG["model"]["base_model"]
-MAX_LENGTH  = CONFIG["model"]["max_length"]
-COLS        = CONFIG["data"]["columns"]
-MODEL_DIR   = os.environ.get("MODEL_DIR", "/app/model_weights")
+BASE_MODEL = CONFIG["model"]["base_model"]
+MAX_LENGTH = CONFIG["model"]["max_length"]
+COLS = CONFIG["data"]["columns"]
+MODEL_DIR = os.environ.get("MODEL_DIR", "/app/model_weights")
 GCS_MODEL_PATH = os.environ.get("GCS_MODEL_PATH", "")
 
 # ---------------------------------------------------------------------------
 # Global model state
 # ---------------------------------------------------------------------------
-_model     = None
+_model = None
 _tokenizer = None
-_device    = None
-_ready     = False
+_device = None
+_ready = False
 
 
 # ---------------------------------------------------------------------------
 # Helpers — identical to train.py so inference matches training exactly
 # ---------------------------------------------------------------------------
 
+
 def _safe(val) -> str:
-    """Replace NaN / empty with [MISSING] — must match train.py exactly."""
-    if pd.isna(val) or str(val).strip() == "":
+    """Replace NaN / None / empty with [MISSING] — must match train.py exactly."""
+    if (
+        val is None
+        or (isinstance(val, float) and math.isnan(val))
+        or str(val).strip() == ""
+    ):
         return "[MISSING]"
     return str(val).strip()
 
@@ -120,10 +125,12 @@ def _build_text_pair(instance: Dict) -> tuple:
 # Model loading
 # ---------------------------------------------------------------------------
 
+
 def _download_weights_from_gcs(gcs_path: str, local_dir: str):
     """Download LoRA adapter weights from GCS to local_dir."""
     import re
     from pathlib import Path
+
     from google.cloud import storage
 
     log.info(f"Downloading weights from {gcs_path} → {local_dir}")
@@ -132,15 +139,15 @@ def _download_weights_from_gcs(gcs_path: str, local_dir: str):
         raise ValueError(f"Invalid GCS path: {gcs_path}")
 
     bucket_name = match.group(1)
-    prefix      = match.group(2).rstrip("/") + "/"
+    prefix = match.group(2).rstrip("/") + "/"
 
     client = storage.Client()
-    blobs  = list(client.list_blobs(bucket_name, prefix=prefix))
+    blobs = list(client.list_blobs(bucket_name, prefix=prefix))
     if not blobs:
         raise RuntimeError(f"No files found at {gcs_path}")
 
     for blob in blobs:
-        rel   = blob.name[len(prefix):]
+        rel = blob.name[len(prefix) :]
         local = Path(local_dir) / rel
         local.parent.mkdir(parents=True, exist_ok=True)
         blob.download_to_filename(str(local))
@@ -188,6 +195,7 @@ def _load_model():
 # Lifespan — load model at startup
 # ---------------------------------------------------------------------------
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _load_model()
@@ -200,6 +208,7 @@ app = FastAPI(title="Entity Resolution Serving", lifespan=lifespan)
 # ---------------------------------------------------------------------------
 # Request / response schemas
 # ---------------------------------------------------------------------------
+
 
 class PredictRequest(BaseModel):
     instances: List[Dict[str, Any]]
@@ -218,6 +227,7 @@ class PredictResponse(BaseModel):
 # Routes
 # ---------------------------------------------------------------------------
 
+
 @app.get("/health")
 def health():
     if not _ready:
@@ -234,7 +244,7 @@ def predict(request: PredictRequest):
         raise HTTPException(status_code=400, detail="instances list is empty")
 
     # Build text pairs — same logic as train.py
-    pairs   = [_build_text_pair(inst) for inst in request.instances]
+    pairs = [_build_text_pair(inst) for inst in request.instances]
     texts_a = [p[0] for p in pairs]
     texts_b = [p[1] for p in pairs]
 
@@ -249,7 +259,7 @@ def predict(request: PredictRequest):
     )
 
     # DeBERTa-v3 does not use token_type_ids
-    input_ids      = enc["input_ids"].to(_device)
+    input_ids = enc["input_ids"].to(_device)
     attention_mask = enc["attention_mask"].to(_device)
 
     with torch.no_grad():
@@ -272,4 +282,5 @@ def predict(request: PredictRequest):
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8080)

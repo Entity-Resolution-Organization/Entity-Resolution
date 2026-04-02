@@ -193,12 +193,15 @@ gcp:
     repository: "ml-models"
     location: "us-central1"
     image_name: "er_{entity_type}_deberta"   # formatted at runtime
-    serving_base_image: "pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime"
+    serving_base_image: "pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime"  # must match trainer Dockerfile
     serving_packages:
       - "google-cloud-storage>=2.0.0"
       - "transformers==4.36.2"
       - "peft==0.7.1"
       - "accelerate==0.25.0"
+      - "sentencepiece==0.1.99"   
+      - "pyyaml>=6.0"             
+      - "pandas"                  
     tmp_build_dir: "/tmp/er_push"
 
 # -----------------------------------------------------------------------------

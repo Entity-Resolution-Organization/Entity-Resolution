@@ -1,4 +1,6 @@
 FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
+# NOTE: serving_base_image in training_config.yaml must match this version
+# to avoid inference drift between training and serving environments
 WORKDIR /app
 
 # System deps + gcloud CLI (single apt block)
