@@ -2,7 +2,7 @@ name: Model Pipeline CI
 
 on:
   push:
-    branches: [main, dev, model-pipeline-migration]
+    branches: [main, dev, model-pipeline]
     paths:
       - "Model-Pipeline/**"
       - ".github/workflows/train-pipeline.yml"
