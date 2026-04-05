@@ -1,0 +1,69 @@
+# =============================================================================
+# Entity Resolution — Model Pipeline
+# Services: mlflow, trainer
+#
+# Trigger training runs with:
+#   docker compose run --rm trainer python pipeline.py --run \
+#     --mlflow-uri http://<VM-EXTERNAL-IP>:5000
+# =============================================================================
+
+x-common-env: &common-env
+  CONFIG_PATH: config/training_config.yaml
+  GCP_PROJECT_ID: entity-resolution-487121
+  GCP_REGION: us-central1
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # MLflow tracking server
+  # Artifacts stored in GCS, metadata in local SQLite
+  # ---------------------------------------------------------------------------
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.11.0
+    extra_hosts:
+      - "metadata.google.internal:169.254.169.254"
+    command: >
+      mlflow server
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --default-artifact-root ${GCS_ARTIFACT_ROOT}
+      --host 0.0.0.0
+      --port 5000
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_data:/mlflow
+    env_file: .env
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Trainer — used to compile/submit the Vertex AI pipeline, then exits.
+  # Scripts are volume-mounted so changes are picked up without rebuilding.
+  #
+  # Compile + upload pipeline:
+  #   docker compose run --rm trainer python pipeline.py --compile --upload \
+  #     --mlflow-uri http://<VM-EXTERNAL-IP>:5000
+  #
+  # Submit a training run:
+  #   docker compose run --rm trainer python pipeline.py --run \
+  #     --mlflow-uri http://<VM-EXTERNAL-IP>:5000
+  # ---------------------------------------------------------------------------
+  trainer:
+    build: .
+    extra_hosts:
+      - "metadata.google.internal:169.254.169.254"
+    depends_on:
+      - mlflow
+    environment:
+      <<: *common-env
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+      - ./cache:/app/cache
+      - ./scripts:/app/scripts
+      - ./config:/app/config
+      - ./pipeline.py:/app/pipeline.py
+    env_file: .env
+    restart: "no"
+
+volumes:
+  mlflow_data:
