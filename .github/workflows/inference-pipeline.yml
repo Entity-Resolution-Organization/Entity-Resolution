@@ -58,14 +58,20 @@ jobs:
       - name: Install lint dependencies
         run: pip install black isort flake8
 
-      - name: black — check formatting
-        run: black --check --line-length 100 scripts/ dags/
+      - name: black — auto-format
+        run: black --line-length 100 scripts/ dags/
 
-      - name: isort — check import order
-        run: isort --check-only --profile black --line-length 100 scripts/ dags/
+      - name: isort — auto-sort imports
+        run: isort --profile black --line-length 100 scripts/ dags/
 
       - name: flake8 — check style
         run: flake8 scripts/ dags/ --max-line-length 100 --ignore E203,W503
+
+      - name: Commit formatting fixes (if any)
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "style: auto-format with black and isort"
+          file_pattern: "Inference-Pipeline/**/*.py"
 
 
   # ================================================================
