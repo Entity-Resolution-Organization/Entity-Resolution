@@ -12,11 +12,7 @@ on:
       - "Inference-Pipeline/**"
 
 env:
-  GCP_PROJECT_ID:    ${{ secrets.GCP_PROJECT_ID }}
   GCP_REGION:        us-central1
-  GCP_BUCKET_NAME:   ${{ secrets.GCP_BUCKET_NAME }}
-  REGISTRY:          us-central1-docker.pkg.dev
-  IMAGE_NAME:        us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/entity-resolution/inference-pipeline
   CLOUD_RUN_SERVICE: entity-resolution-inference
 
 jobs:
@@ -88,24 +84,18 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
       - name: Configure Docker
-        run: gcloud auth configure-docker ${{ env.REGISTRY }} --quiet
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          tags: |
-            type=sha,prefix=sha-
-            type=ref,event=branch
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: Inference-Pipeline
-          file:    Inference-Pipeline/Dockerfile
-          push:    true
-          tags:    ${{ steps.meta.outputs.tags }}
+        run: |
+          IMAGE="us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/ml-models/inference-pipeline"
+          docker buildx build \
+            --file Inference-Pipeline/Dockerfile \
+            --tag "${IMAGE}:sha-${{ github.sha }}" \
+            --tag "${IMAGE}:${{ github.ref_name }}" \
+            --push \
+            Inference-Pipeline
 
   deploy:
     name: Deploy to Cloud Run
@@ -128,7 +118,7 @@ jobs:
         with:
           service: ${{ env.CLOUD_RUN_SERVICE }}
           region:  ${{ env.GCP_REGION }}
-          image:   ${{ env.IMAGE_NAME }}:latest
+          image:   us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/ml-models/inference-pipeline:sha-${{ github.sha }}
           env_vars: |
             GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}
             GCP_BUCKET_NAME=${{ secrets.GCP_BUCKET_NAME }}
