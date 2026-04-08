@@ -37,7 +37,8 @@ prometheus-client==0.20.0
 mlflow==2.13.0
 
 # --- Airflow (DAG only — Airflow itself provided by shared compose) ---
-apache-airflow==2.8.1
+# apache-airflow -- runs on Airflow VM, not in this container
+
 
 # --- Testing ---
 pytest==8.2.0
