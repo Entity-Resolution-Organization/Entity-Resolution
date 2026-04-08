@@ -97,6 +97,8 @@ jobs:
           tags: |
             type=sha,prefix=sha-
             type=ref,event=branch
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
@@ -104,8 +106,6 @@ jobs:
           file:    Inference-Pipeline/Dockerfile
           push:    true
           tags:    ${{ steps.meta.outputs.tags }}
-          cache-from: type=gha
-          cache-to:   type=gha,mode=max
 
   deploy:
     name: Deploy to Cloud Run
