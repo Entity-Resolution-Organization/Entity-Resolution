@@ -77,7 +77,7 @@ def _make_decision(probability: float, cfg: dict) -> tuple:
     match_threshold = t["match_threshold"]    # 0.45
     no_match_ceiling = t["no_match_ceiling"]  # 0.20
     high_min = t["confidence"]["high_min"]    # 0.80
-    medium_min = t["confidence"]["medium_min"] # 0.50
+    medium_min = t["confidence"]["medium_min"]  # 0.50
 
     if probability >= match_threshold:
         decision = "MATCH"
