@@ -33,8 +33,8 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from scripts.model_client import get_client
-from scripts.preprocess import InferencePreprocessor
+from scripts.model_client import get_client  # noqa: E402
+from scripts.preprocess import InferencePreprocessor  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +232,7 @@ def render_similarity_bars(field_sims):
             f'<div style="display:flex;justify-content:space-between;font-size:13px">'
             f"<span>{label}</span><span><b>{pct:.0f}%</b></span></div>"
             f'<div style="background:#e5e7eb;border-radius:6px;height:10px">'
-            f'<div style="background:{color};width:{min(pct,100):.0f}%;height:10px;'
+            f'<div style="background:{color};width:{min(pct, 100):.0f}%;height:10px;'
             f'border-radius:6px"></div></div></div>',
             unsafe_allow_html=True,
         )
@@ -396,7 +396,7 @@ def tab_unify():
                 f'padding:4px 0;font-size:13px">'
                 f'<span><b>{rec["source"]}</b>: {rec["name"]}</span>'
                 f'<span style="color:{badge_color};font-weight:600">'
-                f"{result.probability*100:.0f}% {result.decision}</span></div>"
+                f"{result.probability * 100:.0f}% {result.decision}</span></div>"
             )
 
         st.markdown(
@@ -411,7 +411,7 @@ def tab_unify():
             f"</div>"
             f'<div style="text-align:right">'
             f'<div style="font-size:32px;font-weight:700;color:{golden_color}">'
-            f"{avg_prob*100:.0f}%</div>"
+            f"{avg_prob * 100:.0f}%</div>"
             f'<div style="font-size:12px;color:#6b7280">avg match confidence</div>'
             f"</div></div>"
             f'<div style="margin-top:12px;border-top:1px solid #e5e7eb;padding-top:12px">'
@@ -479,7 +479,7 @@ def tab_batch():
                     "addr_sim": round(result.field_similarities.get("address_token_overlap", 0), 3),
                 }
             )
-            progress.progress((i + 1) / total, text=f"Resolved {i+1}/{total} pairs")
+            progress.progress((i + 1) / total, text=f"Resolved {i + 1}/{total} pairs")
 
         progress.empty()
         result_df = pd.DataFrame(results)
