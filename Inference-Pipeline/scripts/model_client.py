@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 model_client.py
 ===============
@@ -27,11 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-import jellyfish
 import yaml
-from google.auth import default
-from google.auth.transport.requests import Request
-from google.cloud import storage
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +55,11 @@ def _load_config() -> dict:
 @dataclass
 class PredictionResult:
     """Unified result returned by both clients."""
-
-    probability: float  # match probability 0.0 - 1.0
-    decision: str  # "MATCH" | "NO-MATCH" | "REVIEW"
-    confidence_level: str  # "HIGH" | "MEDIUM" | "LOW"
+    probability: float        # match probability 0.0 - 1.0
+    decision: str             # "MATCH" | "NO-MATCH" | "REVIEW"
+    confidence_level: str     # "HIGH" | "MEDIUM" | "LOW"
     field_similarities: dict  # per-field breakdown for explainability
-    latency_ms: float  # round-trip time
+    latency_ms: float         # round-trip time
 
     def to_dict(self) -> dict:
         return {
@@ -79,10 +74,10 @@ class PredictionResult:
 def _make_decision(probability: float, cfg: dict) -> tuple:
     """Convert raw probability into (decision, confidence_level) using config thresholds."""
     t = cfg["thresholds"]
-    match_threshold = t["match_threshold"]  # 0.45
+    match_threshold = t["match_threshold"]    # 0.45
     no_match_ceiling = t["no_match_ceiling"]  # 0.20
-    high_min = t["confidence"]["high_min"]  # 0.80
-    medium_min = t["confidence"]["medium_min"]  # 0.50
+    high_min = t["confidence"]["high_min"]    # 0.80
+    medium_min = t["confidence"]["medium_min"] # 0.50
 
     if probability >= match_threshold:
         decision = "MATCH"
@@ -121,6 +116,7 @@ class VertexAIClient:
 
     def _load_endpoint_info(self) -> None:
         """Read endpoint_info.json from GCS and cache the predict URL."""
+        from google.cloud import storage
         bucket_name = self._cfg["gcp"]["bucket_name"]
         gcs_path = "pipeline-results/endpoint_info.json"
 
@@ -141,8 +137,10 @@ class VertexAIClient:
 
     def _get_token(self) -> str:
         """Get a fresh Google auth token."""
+        from google.auth import default as google_default
+        from google.auth.transport.requests import Request
         if self._credentials is None:
-            self._credentials, _ = default(
+            self._credentials, _ = google_default(
                 scopes=["https://www.googleapis.com/auth/cloud-platform"]
             )
         self._credentials.refresh(Request())
@@ -166,7 +164,7 @@ class VertexAIClient:
         results = []
 
         for i in range(0, len(pairs), max_batch):
-            batch = pairs[i : i + max_batch]
+            batch = pairs[i: i + max_batch]
             payload = json.dumps({"instances": batch}).encode("utf-8")
             token = self._get_token()
 
@@ -195,15 +193,13 @@ class VertexAIClient:
 
                     decision, confidence = _make_decision(probability, cfg)
                     field_sims = _compute_field_similarities(pair)
-                    results.append(
-                        PredictionResult(
-                            probability=probability,
-                            decision=decision,
-                            confidence_level=confidence,
-                            field_similarities=field_sims,
-                            latency_ms=latency_ms / len(batch),
-                        )
-                    )
+                    results.append(PredictionResult(
+                        probability=probability,
+                        decision=decision,
+                        confidence_level=confidence,
+                        field_similarities=field_sims,
+                        latency_ms=latency_ms / len(batch),
+                    ))
 
             except Exception as e:
                 logger.error(f"Vertex AI prediction failed for batch {i}: {e}")
@@ -237,19 +233,18 @@ class MockClient:
             probability = self._score_pair(pair)
             decision, confidence = _make_decision(probability, self._cfg)
             field_sims = _compute_field_similarities(pair)
-            results.append(
-                PredictionResult(
-                    probability=probability,
-                    decision=decision,
-                    confidence_level=confidence,
-                    field_similarities=field_sims,
-                    latency_ms=(time.monotonic() - t0) * 1000,
-                )
-            )
+            results.append(PredictionResult(
+                probability=probability,
+                decision=decision,
+                confidence_level=confidence,
+                field_similarities=field_sims,
+                latency_ms=(time.monotonic() - t0) * 1000,
+            ))
         return results
 
     def _score_pair(self, pair: dict) -> float:
         """70% name similarity + 30% address similarity."""
+        import jellyfish
         name1 = str(pair.get("name1", "")).lower().strip()
         name2 = str(pair.get("name2", "")).lower().strip()
         addr1 = str(pair.get("address1", "")).lower().strip()
@@ -276,6 +271,7 @@ def _token_overlap(a: str, b: str) -> float:
 
 def _compute_field_similarities(pair: dict) -> dict:
     """Per-field similarity breakdown for explainability."""
+    import jellyfish
     name1 = str(pair.get("name1", "")).lower().strip()
     name2 = str(pair.get("name2", "")).lower().strip()
     addr1 = str(pair.get("address1", "")).lower().strip()
