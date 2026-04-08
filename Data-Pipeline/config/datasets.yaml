@@ -9,6 +9,28 @@ active_datasets:
   - "nc_voters"
   - "ofac_sdn"
 
+# ---------------------------------------------------------------------------
+# Pair Distribution (applies to all datasets)
+#
+# Ratio of each pair type in the final training data.
+# Must sum to 1.0.
+# ---------------------------------------------------------------------------
+pair_distribution:
+  clean_positive: 0.30        # Existing same-cluster matches
+  corrupted_positive: 0.25    # Augmented matches (OCR, transliteration, nicknames)
+  hard_negative: 0.35         # High-overlap non-matches
+  easy_negative: 0.08         # Random non-matches
+  relationship_pair: 0.02     # Same surname + address, different people
+
+# Hard negative sub-method allocation (within the 35% hard negative budget)
+hard_negative_methods:
+  nearest_neighbor: 0.40      # Same last-name prefix, different cluster
+  partial_overlap: 0.35       # Same name + different address (or vice versa)
+  blocking_collision: 0.25    # Same last name + same street, different people
+
+# ---------------------------------------------------------------------------
+# Per-Dataset Configuration
+# ---------------------------------------------------------------------------
 datasets:
   pseudopeople:
     name: "Pseudopeople Synthetic Population"
@@ -18,6 +40,8 @@ datasets:
     target_records: 150000
     corruption:
       rate: 0.25
+    # Total pairs = positive + negative (distribution controlled above)
+    # 80K total → 24K clean pos, 20K corrupted pos, 28K hard neg, 6.4K easy neg, 1.6K relationship
     pairs:
       positive: 40000
       negative: 40000
@@ -41,6 +65,8 @@ datasets:
     base_records: 2000
     target_records: 150000
     corruption:
+      # Higher rate for OFAC — sanctions data has more name variation in the real world
+      # and transliteration variants are critical for this source
       rate: 0.30
     pairs:
       positive: 40000
