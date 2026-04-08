@@ -93,7 +93,7 @@ jobs:
           docker buildx build \
             --file Inference-Pipeline/Dockerfile \
             --tag "${IMAGE}:sha-${{ github.sha }}" \
-            --tag "${IMAGE}:${{ github.ref_name }}" \
+            --tag "${IMAGE}:latest" \
             --push \
             Inference-Pipeline
 
