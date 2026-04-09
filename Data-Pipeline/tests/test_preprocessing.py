@@ -712,6 +712,9 @@ class TestPairGeneratorFull:
             "hard_negative_nearest",
             "hard_negative_partial",
             "hard_negative_blocking",
+            "hard_negative_addr_component",
+            "hard_negative_addr_collision",
+            "hard_negative_phonetic",
             "easy_negative",
             "relationship_pair",
         }

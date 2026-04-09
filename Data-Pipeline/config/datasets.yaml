@@ -24,9 +24,12 @@ pair_distribution:
 
 # Hard negative sub-method allocation (within the 35% hard negative budget)
 hard_negative_methods:
-  nearest_neighbor: 0.40      # Same last-name prefix, different cluster
-  partial_overlap: 0.35       # Same name + different address (or vice versa)
-  blocking_collision: 0.25    # Same last name + same street, different people
+  nearest_neighbor: 0.25      # Same last-name prefix, different cluster
+  partial_overlap: 0.20       # Same name + different address (or vice versa)
+  blocking_collision: 0.15    # Same last name + same street, different people
+  address_component: 0.20     # Same name + street, different city/zip (postcode signal)
+  address_collision: 0.10     # Same address, completely different names
+  phonetic_near_miss: 0.10    # Similar-sounding names, different addresses
 
 # ---------------------------------------------------------------------------
 # Per-Dataset Configuration

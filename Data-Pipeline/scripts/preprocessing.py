@@ -25,10 +25,12 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 from corruption_maps import (
     ADDRESS_COMPONENTS,
+    CITY_STATE_ZIP_POOLS,
     COMMON_MIDDLE_NAMES,
     DIRECTIONAL_MAP,
     NICKNAME_MAP,
     OCR_ERROR_MAP,
+    PHONETIC_CONFUSION_PAIRS,
     STREET_ABBREVIATIONS,
     TRANSLITERATION_MAP,
     UNIT_FORMATS,
@@ -518,9 +520,12 @@ class PairGenerator:
     }
 
     HARD_NEGATIVE_METHODS = {
-        "nearest_neighbor": 0.40,
-        "partial_overlap": 0.35,
-        "blocking_collision": 0.25,
+        "nearest_neighbor": 0.25,
+        "partial_overlap": 0.20,
+        "blocking_collision": 0.15,
+        "address_component": 0.20,
+        "address_collision": 0.10,
+        "phonetic_near_miss": 0.10,
     }
 
     def __init__(self, corruption_rate: float = 0.25):
@@ -577,6 +582,255 @@ class PairGenerator:
         return pairs[:n_pairs]
 
     # -----------------------------------------------------------------
+    # Address component negatives: same name + street, different city/zip
+    # Teaches: postcode and city are discriminating signals
+    # -----------------------------------------------------------------
+    def _address_component_negatives(
+        self, df: pd.DataFrame, n_pairs: int
+    ) -> List[dict]:
+        """
+        Same name, same street name, different city/state/ZIP.
+        Examples:
+          Mike Green, 45 MG Road, Boston MA 02145 vs
+          Michael Greene, 45 MG Road, Los Angeles CA 90001 → label 0
+
+          John Smith, 100 Main St, Austin TX 73301 vs
+          John Smith, 100 Main St, Austin MN 55912 → label 0
+        """
+        pairs = []
+        records = df.to_dict("records")
+        streets = [
+            "Main St",
+            "Oak Ave",
+            "Elm St",
+            "Pine Dr",
+            "Cedar Ln",
+            "Maple Rd",
+            "Park Ave",
+            "Washington St",
+            "Broad St",
+            "MG Road",
+        ]
+
+        for _ in range(n_pairs):
+            if not records:
+                break
+            base = random.choice(records)
+            base_name = str(base.get("name", ""))
+            if not base_name.strip():
+                continue
+
+            # Pick a street (reuse base street or pick a common one)
+            base_addr = str(base.get("address", ""))
+            street_num = str(random.randint(1, 999))
+
+            # Extract street name from base address or use a common one
+            addr_parts = base_addr.split(",")
+            if addr_parts:
+                street_part = addr_parts[0].strip()
+            else:
+                street_part = f"{street_num} {random.choice(streets)}"
+
+            # Pick two different cities
+            city1, city2 = random.sample(CITY_STATE_ZIP_POOLS, 2)
+
+            addr1 = f"{street_part}, {city1['city']}, {city1['state']} {city1['zip']}"
+            addr2 = f"{street_part}, {city2['city']}, {city2['state']} {city2['zip']}"
+
+            # Optionally apply name variant to one side (nickname, OCR)
+            name_variant = base_name
+            if random.random() < 0.5:
+                name_variant = self.corruptor.corrupt_name(base_name)
+
+            rec1 = pd.Series(
+                {
+                    "id": f"{base['id']}_ac1_{random.randint(1000, 9999)}",
+                    "name": base_name,
+                    "address": addr1,
+                    "cluster_id": f"ac_{base['cluster_id']}_1",
+                }
+            )
+            rec2 = pd.Series(
+                {
+                    "id": f"{base['id']}_ac2_{random.randint(1000, 9999)}",
+                    "name": name_variant,
+                    "address": addr2,
+                    "cluster_id": f"ac_{base['cluster_id']}_2",
+                }
+            )
+
+            pairs.append(
+                self._make_pair(
+                    rec1,
+                    rec2,
+                    label=0,
+                    pair_type="hard_negative_addr_component",
+                )
+            )
+
+        logger.info(f"Address component negatives: {len(pairs)} (requested {n_pairs})")
+        return pairs[:n_pairs]
+
+    # -----------------------------------------------------------------
+    # Address collision negatives: same address, different names
+    # Teaches: address alone doesn't mean same person
+    # -----------------------------------------------------------------
+    def _address_collision_negatives(
+        self, df: pd.DataFrame, n_pairs: int
+    ) -> List[dict]:
+        """
+        Same address, completely different names.
+        Examples:
+          Ivan Petrov, 48 Main St vs Ahmed Hassan, 48 Main St → label 0
+          Jennifer Wilson, 200 Oak Ave vs Carlos Garcia, 200 Oak Ave → label 0
+        """
+        pairs = []
+        records = df.to_dict("records")
+
+        for _ in range(n_pairs):
+            if len(records) < 2:
+                break
+
+            # Pick two records with different names
+            r1 = random.choice(records)
+            r2 = random.choice(records)
+            attempts = 0
+            while (
+                str(r1.get("name", "")).lower() == str(r2.get("name", "")).lower()
+                or str(r1["cluster_id"]) == str(r2["cluster_id"])
+            ) and attempts < 20:
+                r2 = random.choice(records)
+                attempts += 1
+
+            if str(r1.get("name", "")).lower() == str(r2.get("name", "")).lower():
+                continue
+
+            # Give both the same address (use r1's address)
+            shared_address = str(r1.get("address", ""))
+            if not shared_address.strip():
+                continue
+
+            rec1 = pd.Series(
+                {
+                    "id": f"{r1['id']}_col1_{random.randint(1000, 9999)}",
+                    "name": str(r1["name"]),
+                    "address": shared_address,
+                    "cluster_id": str(r1["cluster_id"]),
+                }
+            )
+            rec2 = pd.Series(
+                {
+                    "id": f"{r2['id']}_col2_{random.randint(1000, 9999)}",
+                    "name": str(r2["name"]),
+                    "address": shared_address,
+                    "cluster_id": str(r2["cluster_id"]),
+                }
+            )
+
+            pairs.append(
+                self._make_pair(
+                    rec1,
+                    rec2,
+                    label=0,
+                    pair_type="hard_negative_addr_collision",
+                )
+            )
+
+        logger.info(f"Address collision negatives: {len(pairs)} (requested {n_pairs})")
+        return pairs[:n_pairs]
+
+    # -----------------------------------------------------------------
+    # Phonetic near-miss negatives: similar-sounding name, different address
+    # Teaches: name phonetic similarity alone is insufficient
+    # -----------------------------------------------------------------
+    def _phonetic_near_miss_negatives(
+        self, df: pd.DataFrame, n_pairs: int
+    ) -> List[dict]:
+        """
+        Similar-sounding last names paired with completely different addresses.
+        Examples:
+          Garcia, 100 Main St Boston vs Garsia, 500 Oak Ave Chicago → label 0
+          Smith, 48 Elm St vs Smyth, 200 Pine Dr → label 0
+          Green, 45 MG Road Boston vs Greene, 45 MG Road LA → label 0
+        """
+        pairs = []
+        records = df.to_dict("records")
+        confusion_keys = list(PHONETIC_CONFUSION_PAIRS.keys())
+
+        for _ in range(n_pairs):
+            if not records:
+                break
+            base = random.choice(records)
+            base_name = str(base.get("name", ""))
+            base_addr = str(base.get("address", ""))
+            parts = base_name.split()
+            if len(parts) < 2 or not base_addr.strip():
+                continue
+
+            last_name = parts[-1]
+            first_name = parts[0]
+
+            # Try to find a phonetic variant for the last name
+            phonetic_variant = None
+            last_title = last_name.title()
+            if last_title in PHONETIC_CONFUSION_PAIRS:
+                phonetic_variant = random.choice(PHONETIC_CONFUSION_PAIRS[last_title])
+            else:
+                # Try matching any key as substring
+                for key in confusion_keys:
+                    if key.lower() == last_name.lower():
+                        phonetic_variant = random.choice(PHONETIC_CONFUSION_PAIRS[key])
+                        break
+
+            if not phonetic_variant:
+                # Fall back to OCR-style corruption of the last name
+                phonetic_variant = NameCorruptor.apply_ocr_error(last_name)
+                if phonetic_variant == last_name:
+                    phonetic_variant = NameCorruptor.apply_typo(last_name)
+
+            # Get a completely different address from another record
+            other = random.choice(records)
+            attempts = 0
+            while str(other["cluster_id"]) == str(base["cluster_id"]) and attempts < 10:
+                other = random.choice(records)
+                attempts += 1
+            other_addr = str(other.get("address", ""))
+
+            # Optionally also vary the first name slightly
+            variant_first = first_name
+            if random.random() < 0.3:
+                variant_first = NameCorruptor.apply_typo(first_name)
+
+            rec1 = pd.Series(
+                {
+                    "id": f"{base['id']}_ph1_{random.randint(1000, 9999)}",
+                    "name": base_name,
+                    "address": base_addr,
+                    "cluster_id": str(base["cluster_id"]),
+                }
+            )
+            rec2 = pd.Series(
+                {
+                    "id": f"{other['id']}_ph2_{random.randint(1000, 9999)}",
+                    "name": f"{variant_first} {phonetic_variant}",
+                    "address": other_addr,
+                    "cluster_id": str(other["cluster_id"]),
+                }
+            )
+
+            pairs.append(
+                self._make_pair(
+                    rec1,
+                    rec2,
+                    label=0,
+                    pair_type="hard_negative_phonetic",
+                )
+            )
+
+        logger.info(f"Phonetic near-miss negatives: {len(pairs)} (requested {n_pairs})")
+        return pairs[:n_pairs]
+
+    # -----------------------------------------------------------------
     # Corrupted positives: forced corruption on one side of a match
     # -----------------------------------------------------------------
     def generate_corrupted_positives(
@@ -615,12 +869,25 @@ class PairGenerator:
         methods = self.HARD_NEGATIVE_METHODS
         n_nearest = int(n_pairs * methods["nearest_neighbor"])
         n_partial = int(n_pairs * methods["partial_overlap"])
-        n_blocking = n_pairs - n_nearest - n_partial
+        n_blocking = int(n_pairs * methods["blocking_collision"])
+        n_addr_component = int(n_pairs * methods["address_component"])
+        n_addr_collision = int(n_pairs * methods["address_collision"])
+        n_phonetic = (
+            n_pairs
+            - n_nearest
+            - n_partial
+            - n_blocking
+            - n_addr_component
+            - n_addr_collision
+        )
 
         pairs = []
         pairs.extend(self._nearest_neighbor_negatives(df, n_nearest))
         pairs.extend(self._partial_overlap_negatives(df, n_partial))
         pairs.extend(self._blocking_collision_negatives(df, n_blocking))
+        pairs.extend(self._address_component_negatives(df, n_addr_component))
+        pairs.extend(self._address_collision_negatives(df, n_addr_collision))
+        pairs.extend(self._phonetic_near_miss_negatives(df, n_phonetic))
 
         random.shuffle(pairs)
         logger.info(f"Hard negatives: {len(pairs)} (requested {n_pairs})")
