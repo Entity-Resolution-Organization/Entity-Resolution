@@ -1,0 +1,114 @@
+# ============================================================
+#  Inference Pipeline Configuration
+#  Entity Resolution — Group 13, Northeastern MLOps Spring 2026
+# ============================================================
+#
+#  This file is the single source of truth for all inference
+#  runtime settings. It is read at startup by model_client.py
+#  and app.py. Sensitive values (project ID, bucket name) are
+#  injected via environment variables — never hardcoded here.
+# ============================================================
+
+# ------------------------------------------------------------------
+# GCP Project Settings
+# ------------------------------------------------------------------
+gcp:
+  project_id: "${GCP_PROJECT_ID}"            # injected from .env
+  region: "us-central1"                      # must match Vertex AI endpoint region
+  bucket_name: "${GCP_BUCKET_NAME}"          # injected from .env
+
+# ------------------------------------------------------------------
+# Vertex AI Endpoint Discovery
+#
+#  deploy_to_endpoint_op (Model-Pipeline) writes a JSON file to GCS
+#  after each successful deployment:
+#    gs://{bucket}/models/endpoint_info.json
+#
+#  Contents:
+#    { "endpoint_id": "...", "endpoint_resource_name": "...",
+#      "model_version": "...", "deployed_at": "..." }
+#
+#  The VertexAIClient reads this file at startup so the inference
+#  service always targets the latest deployed endpoint without a
+#  config change or redeploy.
+# ------------------------------------------------------------------
+vertex_ai:
+  endpoint_info_gcs_path: "models/endpoint_info.json"   # relative to bucket root
+  prediction_timeout_seconds: 30
+  max_batch_size: 256                        # max pairs per Vertex AI request
+
+# ------------------------------------------------------------------
+# Mock Client (for development / demo when endpoint is down)
+#
+#  Set use_mock: true to use the Jaro-Winkler + token-overlap client.
+#  The factory function in model_client.py reads this flag.
+#  Override at runtime with env var:  USE_MOCK_CLIENT=true
+# ------------------------------------------------------------------
+mock:
+  use_mock: true                             # FLIP TO false when endpoint is live
+  mock_latency_ms: 80                        # simulated latency for realistic demos
+
+# ------------------------------------------------------------------
+# Classification Thresholds
+#  Matches training_config.yaml in Model-Pipeline.
+#  probability >= match_threshold  → decision: MATCH
+#  probability <= no_match_ceiling → decision: NO-MATCH
+#  between the two               → decision: REVIEW
+# ------------------------------------------------------------------
+thresholds:
+  match_threshold: 0.45                      # aligned with training_config.yaml
+  no_match_ceiling: 0.20
+  confidence:
+    high_min: 0.80                           # >= 0.80 → HIGH confidence
+    medium_min: 0.50                         # 0.50–0.79 → MEDIUM confidence
+                                             # < 0.50 → LOW confidence
+
+# ------------------------------------------------------------------
+# GCS Path Layout  (all paths relative to bucket root)
+# ------------------------------------------------------------------
+gcs_paths:
+  # Data pipeline outputs (read-only for inference)
+  training_data: "training/"
+  analytics_data: "analytics/merged_all.csv"   # used by /search endpoint
+  metrics_dir: "metrics/"                       # quality gate, bias report, model metrics
+
+  # Inference I/O
+  inference_input: "inference/input/"
+  inference_results: "inference/results/"
+
+  # Model artifacts
+  model_artifacts: "models/artifacts/"
+
+# ------------------------------------------------------------------
+# API Settings
+# ------------------------------------------------------------------
+api:
+  host: "0.0.0.0"
+  port: 8000
+  max_batch_pairs: 1000                      # /resolve/batch upper limit
+  search_top_k: 10                           # /search returns top-K candidates
+  cors_origins:
+    - "http://localhost:8501"                # Streamlit dev
+    - "https://*.run.app"                   # Cloud Run production
+
+# ------------------------------------------------------------------
+# Streamlit Frontend
+# ------------------------------------------------------------------
+ui:
+  port: 8501
+  api_base_url: "${API_BASE_URL}"            # http://localhost:8000 locally,
+                                             # Cloud Run URL in production
+
+# ------------------------------------------------------------------
+# MLflow Experiment Tracking
+# ------------------------------------------------------------------
+mlflow:
+  tracking_uri: "${MLFLOW_TRACKING_URI}"
+  experiment_name: "entity-resolution-inference"
+
+# ------------------------------------------------------------------
+# Logging
+# ------------------------------------------------------------------
+logging:
+  level: "INFO"
+  format: "json"                             # structured logs for Cloud Logging

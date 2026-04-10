@@ -34,10 +34,11 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# DVC cache
-.dvc/tmp
-.dvc/cache
+# DVC
+.dvc/
+*.dvc/
 
 # Environment & Secrets
 .env
 *.key
+secrets/
