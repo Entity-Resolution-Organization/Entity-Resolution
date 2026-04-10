@@ -422,6 +422,12 @@ def push_to_registry_op(mlflow_tracking_uri: str, gcs_bucket: str) -> str:
 WORKDIR /app
 RUN pip install --no-cache-dir \\
     {packages_str}
+RUN python -c "\\
+from transformers import AutoModelForSequenceClassification, AutoTokenizer; \\
+AutoTokenizer.from_pretrained('microsoft/deberta-v3-base', cache_dir='/app/cache'); \\
+AutoModelForSequenceClassification.from_pretrained(\\
+    'microsoft/deberta-v3-base', num_labels=2, cache_dir='/app/cache')"
+ENV TRANSFORMERS_CACHE=/app/cache   
 COPY model_weights/ ./model_weights/
 COPY serve.py ./scripts/serve.py
 COPY config/ ./config/
@@ -707,6 +713,7 @@ def deploy_to_endpoint_op(
         {
             "endpoint_resource_name": endpoint.resource_name,
             "predict_url": predict_url,
+            "model": model_resource_name,
             "project_id": gcp["project_id"],
             "region": gcp["region"],
         }
