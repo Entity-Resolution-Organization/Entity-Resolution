@@ -159,7 +159,10 @@ def _load_model():
 
     _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info(f"Device: {_device}")
-    log.info(f"Threshold: {THRESHOLD}")
+    log.info(f"MODEL_DIR: {MODEL_DIR}")
+    log.info(f"GCS_MODEL_PATH: {GCS_MODEL_PATH}")
+    log.info(f"TRANSFORMERS_CACHE: {os.environ.get('TRANSFORMERS_CACHE', 'not set')}")
+    log.info(f"Cache dir from config: {CONFIG['model'].get('cache_dir')}")
 
     # Download weights if MODEL_DIR is empty and GCS path is provided
     if not os.path.exists(os.path.join(MODEL_DIR, "adapter_config.json")):
@@ -169,6 +172,12 @@ def _load_model():
             raise RuntimeError(
                 f"No weights found at {MODEL_DIR} and GCS_MODEL_PATH is not set."
             )
+
+    cache = CONFIG["model"].get("cache_dir")
+    if cache and os.path.exists(cache):
+        log.info(f"Cache contents: {os.listdir(cache)}")
+    else:
+        log.info(f"Cache dir missing or empty: {cache}")
 
     log.info(f"Loading base model: {BASE_MODEL}")
     base = AutoModelForSequenceClassification.from_pretrained(
