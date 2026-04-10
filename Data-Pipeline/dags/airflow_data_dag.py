@@ -36,8 +36,11 @@ from airflow.operators.python import PythonOperator
 sys.path.insert(0, "/opt/airflow/scripts")
 
 from bias_detection import BiasDetector  # noqa: E402
-from data_validation import QualityGate  # noqa: E402
-from data_validation import DatasetValidator, TrainingSplitValidator
+from data_validation import (  # noqa: E402
+    DatasetValidator,
+    QualityGate,
+    TrainingSplitValidator,
+)
 from dataset_factory import get_dataset_handler  # noqa: E402
 from preprocessing import preprocess_dataset  # noqa: E402
 from schema_validation import SchemaValidator  # noqa: E402
@@ -74,6 +77,12 @@ def load_config():
     """Load dataset configuration from YAML."""
     with open(CONFIG_PATH) as f:
         return yaml.safe_load(f)
+
+
+def get_pair_distribution():
+    """Load pair distribution ratios from config (or None for defaults)."""
+    config = load_config()
+    return config.get("pair_distribution", None)
 
 
 def get_active_datasets():
@@ -197,7 +206,13 @@ def transform_dataset(dataset_name: str, **context):
     )
     print(f"[Transform] {dataset_name}: {len(raw_df)} records")
 
-    accounts_df, pairs_df = preprocess_dataset(raw_df, dataset_config)
+    # Inject pair distribution from global config into per-dataset config
+    pair_dist = get_pair_distribution()
+    config_with_dist = dict(dataset_config)
+    if pair_dist:
+        config_with_dist["pair_distribution"] = pair_dist
+
+    accounts_df, pairs_df = preprocess_dataset(raw_df, config_with_dist)
     accounts_df["entity_type"] = entity_type
     accounts_df["source_dataset"] = dataset_name
     pairs_df["entity_type"] = entity_type
