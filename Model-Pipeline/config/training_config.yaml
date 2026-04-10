@@ -1,6 +1,7 @@
 # =============================================================================
 # Entity Resolution — Model Pipeline Configuration
-# Used by: train.py, evaluate.py, bias_detection.py, sensitivity_analysis.py
+# Used by: train.py, evaluate.py, bias_detection.py, sensitivity_analysis.py,
+#          build_graph.py, write_clusters.py, score_network.py
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -32,7 +33,7 @@ lora:
 # Training  (used by train.py)
 # -----------------------------------------------------------------------------
 training:
-  batch_size: 16
+  batch_size: 32
   learning_rate: 2.0e-5
   num_epochs: 3
   warmup_steps: 500
@@ -68,7 +69,7 @@ training:
 # -----------------------------------------------------------------------------
 data:
   gcs_bucket: "entity-resolution-bucket-1"
-  gcs_path: "training/2026-03-23"
+  gcs_path: "training"
   local_data_dir: "./data"
 
   # Entity types to train/evaluate — comment out types not yet ready
@@ -211,3 +212,90 @@ notifications:
   enabled: false
   slack_webhook_url: null
   email_recipients: []
+
+# -----------------------------------------------------------------------------
+# Graph — clustering thresholds
+# -----------------------------------------------------------------------------
+graph:
+  deberta_keep_threshold: 0.30
+  cluster_edge_threshold: 0.45
+  graph_prefix: "graph"
+  process_csv_bucket: "entity-resolution-bucket-1"
+  experiment_name: "entity-resolution-clusters"
+
+# -----------------------------------------------------------------------------
+# BigQuery — output tables for clusters
+# -----------------------------------------------------------------------------
+bigquery:
+  dataset: "entity_resolution"
+  clusters_table: "entity_clusters"
+  edges_table: "cluster_edges"
+  network_scores_table: "network_scores"
+  location: "US"
+
+network_scoring:
+  experiment_name: "entity-resolution-network"
+  weights:
+    cluster_risk:   0.30
+    bad_neighbour:  0.40
+    shared_field:   0.20
+    centrality:     0.10
+  high_risk_threshold:   0.70
+  medium_risk_threshold: 0.40
+
+# -----------------------------------------------------------------------------
+# Inference pipeline — Vertex AI scheduling params
+# Customise these without touching Python code.
+# -----------------------------------------------------------------------------
+inference_pipeline:
+  pipeline_name: "er-inference-pipeline"
+  pipeline_yaml_gcs: "gs://entity-resolution-bucket-1/pipelines/inference_pipeline.yaml"
+
+  # Airflow DAG schedule (cron) — used by airflow_inference_dag.py
+  schedule_cron: "0 2 * * *"       # 2 AM UTC daily
+
+  # Machine types
+  build_graph_machine: "n1-standard-8"   # high memory for embedding extraction
+  gnn_machine: "n1-standard-8"           # T4 GPU attached separately in pipeline
+  write_clusters_machine: "n1-standard-4"
+
+  # Entity types to run — can differ from training entity_types
+  entity_types:
+    - "person"
+
+  # Records source for each entity type (GCS paths)
+  # These are the NEW records to resolve daily — not the training set.
+  # Override per entity type for multi-entity pipelines.
+  records_gcs_paths:
+    person: "gs://entity-resolution-bucket-1/inference/person/records.csv"
+
+# -----------------------------------------------------------------------------
+# Field rules — consumed by build_graph.py enrich_edge()
+# Controls edge feature computation, weights, and veto logic.
+# Tier 1 (live): weight, veto_on_mismatch changes take effect next pipeline run
+# Tier 3 (retrain): adding a field to DeBERTa text pair requires retrain
+# -----------------------------------------------------------------------------
+field_rules:
+  - field: dob
+    scorer: date_exact        # normalises separators, binary match
+    weight: 1.5               # higher weight — hard identity signal
+    veto_on_mismatch: true    # DOB present on both + mismatch → veto edge
+    has_flag: true
+
+  - field: email
+    scorer: email             # domain-aware: exact=1.0, same user diff domain=0.6
+    weight: 1.0
+    veto_on_mismatch: false   # email mismatch alone is not definitive
+    has_flag: true
+
+  - field: phone
+    scorer: phone             # normalised digit suffix comparison
+    weight: 1.0
+    veto_on_mismatch: false
+    has_flag: true
+
+  - field: company
+    scorer: jaro_winkler      # normalised text fuzzy match
+    weight: 0.8
+    veto_on_mismatch: false
+    has_flag: true
