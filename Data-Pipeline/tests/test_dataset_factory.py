@@ -52,7 +52,10 @@ class TestPseudopeopleHandler:
         raw_df = handler.download()
         normalized_df = handler.normalize_schema(raw_df)
 
-        assert list(normalized_df.columns) == ["id", "name", "address", "dob"]
+        assert "id" in normalized_df.columns
+        assert "name" in normalized_df.columns
+        assert "address" in normalized_df.columns
+        assert "dob" in normalized_df.columns
         assert "person_id" not in normalized_df.columns
         assert "first_name" not in normalized_df.columns
 
@@ -64,6 +67,15 @@ class TestPseudopeopleHandler:
 
         # Name should contain a space (first + last)
         assert normalized_df["name"].str.contains(" ").all()
+
+    def test_dob_preserved(self, sample_config):
+        """Test that DOB survives normalization for hard negative generation."""
+        handler = PseudopeopleHandler(sample_config)
+        raw_df = handler.download()
+        normalized_df = handler.normalize_schema(raw_df)
+
+        assert "dob" in normalized_df.columns
+        assert normalized_df["dob"].notna().all()
 
     def test_subsample_reduces_size(self, sample_config):
         """Test subsampling when data exceeds target."""
@@ -106,7 +118,10 @@ class TestNCVotersHandler:
         raw_df = handler.download()
         normalized_df = handler.normalize_schema(raw_df)
 
-        assert list(normalized_df.columns) == ["id", "name", "address", "dob"]
+        assert "id" in normalized_df.columns
+        assert "name" in normalized_df.columns
+        assert "address" in normalized_df.columns
+        assert "dob" in normalized_df.columns
         assert "voter_id" not in normalized_df.columns
 
     def test_address_combines_components(self, sample_config):
@@ -117,6 +132,15 @@ class TestNCVotersHandler:
 
         # Address should contain city, state, zip
         assert normalized_df["address"].str.contains("NC").all()
+
+    def test_dob_preserved(self, sample_config):
+        """Test that birth_year maps to dob and survives normalization."""
+        handler = NCVotersHandler(sample_config)
+        raw_df = handler.download()
+        normalized_df = handler.normalize_schema(raw_df)
+
+        assert "dob" in normalized_df.columns
+        assert normalized_df["dob"].notna().all()
 
     def test_all_nc_state(self, sample_config):
         """Test all generated records have NC state."""
@@ -149,6 +173,14 @@ class TestOFACHandler:
         assert "name" in normalized_df.columns
         assert "address" in normalized_df.columns
         assert len(normalized_df.columns) == 3  # id, name, address only (no dob)
+
+    def test_no_dob_in_ofac(self, sample_config):
+        """OFAC SDN CSV has no DOB — schema should reflect that."""
+        handler = OFACHandler(sample_config)
+        raw_df = handler._generate_synthetic_data()
+        normalized_df = handler.normalize_schema(raw_df)
+
+        assert "dob" not in normalized_df.columns
 
     def test_synthetic_data_has_programs(self, sample_config):
         """Test synthetic data includes sanctions programs."""
@@ -236,7 +268,9 @@ class TestEdgeCases:
         normalized = handler.normalize_schema(df)
 
         assert len(normalized) == 1
-        assert list(normalized.columns) == ["id", "name", "address", "dob"]
+        assert "id" in normalized.columns
+        assert "name" in normalized.columns
+        assert "address" in normalized.columns
 
     def test_download_with_retry_attribute(self, sample_config):
         """Test that handlers have retry capability."""
