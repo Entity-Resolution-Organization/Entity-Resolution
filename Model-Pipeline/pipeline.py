@@ -620,7 +620,7 @@ def deploy_to_endpoint_op(
     gcs_bucket: str,
     machine_type: str = "n1-standard-4",
     min_replica_count: int = 1,
-    max_replica_count: int = 3,
+    max_replica_count: int = 5,
 ) -> str:
     """
     Deploys the registered model to a Vertex AI Endpoint.
