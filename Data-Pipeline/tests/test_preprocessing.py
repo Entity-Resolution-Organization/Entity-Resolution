@@ -379,11 +379,20 @@ class TestAddressCorruptorNew:
 class TestDataCorruptor:
     def test_corrupt_record_with_full_rate(self, sample_record):
         corruptor = DataCorruptor(corruption_rate=1.0)
-        corrupted = corruptor.corrupt_record(sample_record)
+        # Some strategies may not change the value (e.g., punctuation on plain names)
+        # Run multiple times — at least one should produce a change
+        changed = False
+        for _ in range(20):
+            corrupted = corruptor.corrupt_record(sample_record)
+            if (
+                corrupted["name"] != sample_record["name"]
+                or corrupted["address"] != sample_record["address"]
+            ):
+                changed = True
+                break
         assert (
-            corrupted["name"] != sample_record["name"]
-            or corrupted["address"] != sample_record["address"]
-        )
+            changed
+        ), "Corruption at rate=1.0 should change at least one field in 20 tries"
 
     def test_corrupt_record_with_zero_rate(self, sample_record):
         corruptor = DataCorruptor(corruption_rate=0.0)
@@ -555,8 +564,14 @@ class TestHardNegatives:
             "hard_negative_nearest",
             "hard_negative_partial",
             "hard_negative_blocking",
+            "hard_negative_addr_component",
+            "hard_negative_addr_collision",
+            "hard_negative_phonetic",
         }
-        assert all(p["pair_type"] in valid_types for p in pairs)
+        for p in pairs:
+            assert (
+                p["pair_type"] in valid_types
+            ), f"Unexpected pair_type: {p['pair_type']}"
 
     def test_nearest_neighbor_has_name_overlap(self, expanded_dataframe):
         gen = PairGenerator()
