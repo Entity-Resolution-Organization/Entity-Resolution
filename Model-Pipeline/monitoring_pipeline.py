@@ -70,15 +70,50 @@ def monitor_op(
         result = monitor.run()
         results[entity_type] = result
 
-    # Return overall decision
-    for et, r in results.items():
-        decision = r.get("thresholds", {}).get("decision", "ERROR")
-        if decision == "RETRAIN_DATA":
-            return "RETRAIN_DATA"
-        if decision == "RETRAIN_MODEL":
-            return "RETRAIN_MODEL"
 
-    return "HEALTHY"
+    # Save detailed summary to GCS for alert_op
+    import json as _json
+    from google.cloud import storage as _storage
+    from datetime import datetime as _dt
+
+    summary = {"timestamp": _dt.utcnow().isoformat(), "entity_results": {}}
+    overall_decision = "HEALTHY"
+
+    for et, r in results.items():
+        et_decision = r.get("thresholds", {}).get("decision", "ERROR")
+        perf = r.get("performance", {})
+        drift = r.get("drift", {})
+        checks = r.get("thresholds", {}).get("checks", {})
+
+        summary["entity_results"][et] = {
+            "decision": et_decision,
+            "f1": perf.get("test_f1"),
+            "precision": perf.get("test_precision"),
+            "recall": perf.get("test_recall"),
+            "auc": perf.get("test_auc"),
+            "drift_ratio": drift.get("drift_ratio"),
+            "drifted_features": drift.get("drifted_features", 0),
+            "checks": checks,
+        }
+
+        if et_decision == "RETRAIN_DATA":
+            overall_decision = "RETRAIN_DATA"
+        elif et_decision == "RETRAIN_MODEL" and overall_decision != "RETRAIN_DATA":
+            overall_decision = "RETRAIN_MODEL"
+
+    summary["overall_decision"] = overall_decision
+
+    try:
+        client = _storage.Client()
+        bucket = client.bucket(gcs_bucket)
+        bucket.blob("monitoring/latest_summary.json").upload_from_string(
+            _json.dumps(summary, indent=2), content_type="application/json"
+        )
+        print(f"[monitor_op] Summary saved to gs://{gcs_bucket}/monitoring/latest_summary.json")
+    except Exception as e:
+        print(f"[monitor_op] Failed to save summary: {e}")
+
+    return overall_decision
 
 
 @component(base_image=TRAINER_IMAGE)
@@ -184,22 +219,71 @@ def trigger_data_pipeline_op(
 
     return "timeout"
 
-def alert_op(reason: str, decision: str) -> None:
-    """Send notification about monitoring result."""
+@component(base_image=TRAINER_IMAGE)
+def alert_op(reason: str, decision: str, gcs_bucket: str) -> None:
+    """Send rich Slack notification with metric details."""
     import json
     import urllib.request
 
     import yaml
+    from google.cloud import storage
 
     with open("/app/config/training_config.yaml") as f:
         config = yaml.safe_load(f)
 
-    msg = (
-        f"[ER Monitoring] Decision: {decision}\n"
-        f"Reason: {reason}\n"
+    # Read detailed summary from GCS
+    summary = None
+    try:
+        client = storage.Client()
+        blob = client.bucket(gcs_bucket).blob("monitoring/latest_summary.json")
+        summary = json.loads(blob.download_as_text())
+    except Exception:
+        pass
+
+    # Build rich message based on decision
+    if decision == "RETRAIN_DATA" and summary:
+        lines = ["⚠️ *[ER Monitoring] Data Drift Detected — Retraining Triggered*\n"]
+        for et, d in summary.get("entity_results", {}).items():
+            lines.append(f"*Entity: {et}*")
+            if d.get("f1") is not None:
+                lines.append(f"  F1: {d['f1']:.4f}")
+            if d.get("precision") is not None:
+                lines.append(f"  Precision: {d['precision']:.4f}")
+            if d.get("recall") is not None:
+                lines.append(f"  Recall: {d['recall']:.4f}")
+            if d.get("drift_ratio") is not None:
+                lines.append(f"  Drift ratio: {d['drift_ratio']:.2%}")
+            lines.append(f"  Drifted features: {d.get('drifted_features', 0)}")
+        lines.append("\nAction: Data pipeline → ML pipeline triggered")
+
+    elif decision == "RETRAIN_MODEL" and summary:
+        lines = ["⚠️ *[ER Monitoring] Model Drift — Retraining Triggered*\n"]
+        for et, d in summary.get("entity_results", {}).items():
+            lines.append(f"*Entity: {et}*")
+            if d.get("f1") is not None:
+                lines.append(f"  F1: {d['f1']:.4f}")
+            if d.get("precision") is not None:
+                lines.append(f"  Precision: {d['precision']:.4f}")
+            if d.get("recall") is not None:
+                lines.append(f"  Recall: {d['recall']:.4f}")
+        lines.append("\nAction: ML pipeline triggered (data looks fine)")
+
+    elif decision == "HEALTHY" and summary:
+        lines = ["✅ *[ER Monitoring] All Checks Passed*\n"]
+        for et, d in summary.get("entity_results", {}).items():
+            f1 = d.get("f1")
+            lines.append(f"  {et}: F1={f1:.4f}" if f1 else f"  {et}: OK")
+
+    else:
+        lines = [f"[ER Monitoring] Decision: {decision}", f"Reason: {reason}"]
+
+    lines.append(f"\nTimestamp: {summary.get('timestamp', 'N/A')}" if summary else "")
+    lines.append(
         f"Vertex AI: https://console.cloud.google.com/vertex-ai/pipelines"
         f"?project={config['gcp']['project_id']}"
     )
+
+    msg = "\n".join(lines)
     print(msg)
 
     notif = config.get("notifications", {})
@@ -211,6 +295,7 @@ def alert_op(reason: str, decision: str) -> None:
             headers={"Content-Type": "application/json"},
         )
         urllib.request.urlopen(req)
+        print("[alert_op] Slack notification sent")
         print("[alert_op] Slack notification sent")
 
 
@@ -253,6 +338,7 @@ def er_monitoring_pipeline(
         alert_op(
             reason="Data drift detected. Data pipeline + retraining triggered.",
             decision="RETRAIN_DATA",
+            gcs_bucket=gcs_bucket,
         ).set_display_name("alert_retrain_data").after(trigger_task)
 
     # Step 3: If MODEL DRIFT, trigger ML pipeline only
@@ -267,6 +353,7 @@ def er_monitoring_pipeline(
         alert_op(
             reason="Model performance degraded. Retraining triggered.",
             decision="RETRAIN_MODEL",
+            gcs_bucket=gcs_bucket,
         ).set_display_name("alert_retrain_model").after(trigger_task_model)
 
     # Step 4: If HEALTHY, just notify
@@ -274,6 +361,7 @@ def er_monitoring_pipeline(
         alert_op(
             reason="All metrics within thresholds. No action needed.",
             decision="HEALTHY",
+            gcs_bucket=gcs_bucket,
         ).set_display_name("alert_healthy")
 
 

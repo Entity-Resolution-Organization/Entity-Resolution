@@ -209,6 +209,6 @@ gcp:
 # Notifications
 # -----------------------------------------------------------------------------
 notifications:
-  enabled: false
-  slack_webhook_url: null
+  enabled: true
+  slack_webhook_url: ""
   email_recipients: []
