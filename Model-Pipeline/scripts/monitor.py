@@ -299,7 +299,7 @@ class ModelMonitor:
         """Write monitoring results to BigQuery tables."""
         print("[Monitor] Step 4: Logging metrics to BigQuery...")
 
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(timezone.utc).isoformat()
         run_id = pipeline_run_id or f"manual_{today}"
         dataset = "entity_resolution"
 
@@ -309,7 +309,7 @@ class ModelMonitor:
         for metric_name in ["test_f1", "test_precision", "test_recall", "test_auc", "test_accuracy"]:
             if metric_name in perf:
                 perf_rows.append({
-                    "date": today,
+                    "timestamp": today,
                     "metric_name": metric_name,
                     "metric_value": perf[metric_name],
                     "entity_type": self.entity_type,
@@ -330,7 +330,7 @@ class ModelMonitor:
         drift_rows = []
         for feature in drift.get("feature_details", []):
             drift_rows.append({
-                "date": today,
+                "timestamp": today,
                 "feature_name": feature["feature"],
                 "drift_score": float(feature["ks_statistic"]),
                 "is_drifted": bool(feature["is_drifted"]),
