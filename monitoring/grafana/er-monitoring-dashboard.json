@@ -87,7 +87,7 @@
         "x": 0,
         "y": 0
       },
-      "id": 3,
+      "id": 2,
       "options": {
         "legend": {
           "calcs": [],
@@ -105,11 +105,11 @@
       "targets": [
         {
           "editorMode": "code",
-          "format": 1,
+          "format": 0,
           "location": "",
           "project": "entity-resolution-487121",
           "rawQuery": true,
-          "rawSql": "SELECT\r\n  timestamp AS time,\r\n  probability,\r\n  CASE WHEN match = true THEN 'match' ELSE 'non-match' END AS prediction,\r\n  latency_ms,\r\n  model_version\r\nFROM `entity-resolution-487121.entity_resolution.prediction_logs`\r\nORDER BY timestamp",
+          "rawSql": "SELECT\r\n  timestamp AS time,\r\n  feature_name,\r\n  drift_score\r\nFROM `entity-resolution-487121.entity_resolution.drift_reports`\r\nORDER BY timestamp",
           "refId": "A",
           "sql": {
             "columns": [
@@ -130,7 +130,7 @@
           }
         }
       ],
-      "title": "Prediction Confidence Over Time",
+      "title": "Data Drift Over Time",
       "type": "timeseries"
     },
     {
@@ -226,7 +226,7 @@
           "location": "",
           "project": "entity-resolution-487121",
           "rawQuery": true,
-          "rawSql": "SELECT\r\n  TIMESTAMP(date) AS time,\r\n  metric_name,\r\n  metric_value\r\nFROM `entity-resolution-487121.entity_resolution.monitoring_metrics`\r\nWHERE metric_name IN ('f1', 'precision', 'recall')\r\nORDER BY date",
+          "rawSql": "SELECT\r\n  timestamp AS time,\r\n  metric_name,\r\n  metric_value\r\nFROM `entity-resolution-487121.entity_resolution.monitoring_metrics`\r\nWHERE metric_name IN ('f1', 'precision', 'recall')\r\nORDER BY timestamp",
           "refId": "A",
           "sql": {
             "columns": [
@@ -317,7 +317,7 @@
         "x": 0,
         "y": 8
       },
-      "id": 2,
+      "id": 3,
       "options": {
         "legend": {
           "calcs": [],
@@ -335,11 +335,11 @@
       "targets": [
         {
           "editorMode": "code",
-          "format": 0,
+          "format": 1,
           "location": "",
           "project": "entity-resolution-487121",
           "rawQuery": true,
-          "rawSql": "SELECT\r\n  TIMESTAMP(date) AS time,\r\n  feature_name,\r\n  drift_score\r\nFROM `entity-resolution-487121.entity_resolution.drift_reports`\r\nORDER BY date",
+          "rawSql": "SELECT\r\n  timestamp AS time,\r\n  probability,\r\n  CASE WHEN match = true THEN 'match' ELSE 'non-match' END AS prediction,\r\n  latency_ms,\r\n  model_version\r\nFROM `entity-resolution-487121.entity_resolution.prediction_logs`\r\nORDER BY timestamp",
           "refId": "A",
           "sql": {
             "columns": [
@@ -360,7 +360,7 @@
           }
         }
       ],
-      "title": "Data Drift Over Time",
+      "title": "Prediction Confidence Over Time",
       "type": "timeseries"
     },
     {
@@ -531,7 +531,7 @@
           "location": "",
           "project": "entity-resolution-487121",
           "rawQuery": true,
-          "rawSql": "SELECT\r\n  feature_name,\r\n  drift_score\r\nFROM `entity-resolution-487121.entity_resolution.drift_reports`\r\nWHERE date = (SELECT MAX(date) FROM `entity-resolution-487121.entity_resolution.drift_reports`)\r\nORDER BY drift_score DESC",
+          "rawSql": "SELECT\r\n  feature_name,\r\n  drift_score\r\nFROM `entity-resolution-487121.entity_resolution.drift_reports`\r\nWHERE timestamp = (SELECT MAX(timestamp) FROM `entity-resolution-487121.entity_resolution.drift_reports`)\r\nORDER BY drift_score DESC",
           "refId": "A",
           "sql": {
             "columns": [
@@ -563,13 +563,13 @@
     "list": []
   },
   "time": {
-    "from": "now-90d",
-    "to": "now"
+    "from": "2025-11-27T19:54:13.580Z",
+    "to": "2026-05-26T17:54:13.580Z"
   },
   "timepicker": {},
   "timezone": "browser",
   "title": "ER Model Monitoring",
   "uid": "adx5xw7",
-  "version": 7,
+  "version": 14,
   "weekStart": ""
 }
