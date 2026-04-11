@@ -11,7 +11,6 @@ const Network = lazy(() => import('./pages/Network'));
 const Batch = lazy(() => import('./pages/Batch'));
 const Clusters = lazy(() => import('./pages/Clusters'));
 const Customer360 = lazy(() => import('./pages/Customer360'));
-const VetoDemo = lazy(() => import('./pages/VetoDemo'));
 const KYC = lazy(() => import('./pages/KYC'));
 const Fraud = lazy(() => import('./pages/Fraud'));
 const Analytics = lazy(() => import('./pages/Analytics'));
@@ -28,13 +27,13 @@ export default function App() {
             <Routes>
               <Route element={<Layout />}>
                 <Route index element={<Home />} />
+                <Route path="match" element={<Resolve />} />
                 <Route path="resolve" element={<Resolve />} />
                 <Route path="scenarios" element={<Scenarios />} />
                 <Route path="network" element={<Network />} />
                 <Route path="batch" element={<Batch />} />
                 <Route path="clusters" element={<Clusters />} />
                 <Route path="customer360" element={<Customer360 />} />
-                <Route path="veto" element={<VetoDemo />} />
                 <Route path="kyc" element={<KYC />} />
                 <Route path="fraud" element={<Fraud />} />
                 <Route path="analytics" element={<Analytics />} />

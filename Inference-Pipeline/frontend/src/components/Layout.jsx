@@ -9,11 +9,10 @@ import { springSnappy } from '../motion';
 
 const NAV_ITEMS = [
   { to: '/',             icon: Home,        label: 'Home' },
-  { to: '/resolve',      icon: GitCompare,  label: 'Resolve' },
+  { to: '/match',        icon: GitCompare,  label: 'Match' },
   { to: '/batch',        icon: Upload,      label: 'Batch' },
   { to: '/clusters',     icon: GitMerge,    label: 'Clusters' },
   { to: '/customer360',  icon: User,        label: '360' },
-  { to: '/veto',         icon: ShieldAlert, label: 'Veto' },
   { to: '/kyc',          icon: Eye,         label: 'KYC' },
   { to: '/fraud',        icon: Shield,      label: 'Fraud' },
   { to: '/analytics',    icon: TrendingUp,  label: 'Analytics' },
@@ -55,16 +54,16 @@ export default function Layout() {
       <a href="#main-content" className="skip-link">Skip to content</a>
 
       {/* ── Top navigation bar ─────────────────────────── */}
-      <header className="sticky top-0 z-30 border-b border-[var(--border-default)] bg-[var(--bg-base)]">
+      <header className="sticky top-0 z-30 border-b border-white/[0.06] bg-[#0a0a0a]">
         <div className="flex items-center h-14 px-5 md:px-8">
 
           {/* Brand */}
           <NavLink to="/" className="flex items-center gap-2.5 shrink-0 no-underline">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-600/15 border border-orange-500/20">
-              <Fingerprint size={16} className="text-orange-400" aria-hidden="true" />
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/10 border border-white/15">
+              <Fingerprint size={16} className="text-white" aria-hidden="true" />
             </div>
-            <span className="text-[15px] font-bold tracking-tight text-stone-100">
-              <span className="text-orange-400">Entity</span> Resolution
+            <span className="text-[15px] font-bold tracking-tight text-white">
+              Resolv
             </span>
           </NavLink>
 
@@ -100,11 +99,7 @@ export default function Layout() {
             ))}
           </nav>
 
-          {/* Right side: status */}
-          <div className="hidden md:flex items-center gap-2 ml-auto text-[11px] text-stone-500">
-            <div className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
-            <span>DeBERTa + LoRA · Vertex AI</span>
-          </div>
+          <div className="ml-auto" />
 
           {/* Mobile hamburger */}
           <button
@@ -142,8 +137,8 @@ export default function Layout() {
               transition={{ type: 'spring', stiffness: 400, damping: 40 }}
             >
               <div className="flex items-center justify-between mb-6">
-                <span className="text-sm font-bold text-stone-100">
-                  <span className="text-orange-400">Entity</span> Resolution
+                <span className="text-sm font-bold text-white">
+                  Resolv
                 </span>
                 <button
                   onClick={() => setMobileOpen(false)}
@@ -174,11 +169,7 @@ export default function Layout() {
                 ))}
               </nav>
               <div className="mt-auto pt-4 border-t border-white/[0.06] text-[11px] text-stone-500">
-                <div className="flex items-center gap-2">
-                  <div className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
-                  <span>DeBERTa + LoRA · Vertex AI</span>
-                </div>
-                <p className="mt-1.5 text-[10px] text-stone-600">Northeastern University · Spring 2026</p>
+                <p className="text-[10px] text-stone-600">Northeastern University · Spring 2026</p>
               </div>
             </motion.div>
           </>
