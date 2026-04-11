@@ -582,6 +582,25 @@ def _get_search_candidates(name: str, address: str, top_k: int = 30) -> list:
 
 
 # ------------------------------------------------------------------
+# Serve React frontend (production builds only)
+# ------------------------------------------------------------------
+_FRONTEND_DIR = Path(__file__).parent.parent / "frontend" / "dist"
+if _FRONTEND_DIR.exists():
+    from starlette.staticfiles import StaticFiles
+    from starlette.responses import FileResponse
+
+    app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIR / "assets")), name="assets")
+
+    @app.get("/{path:path}")
+    async def serve_spa(path: str):
+        """Serve React SPA — all non-API routes fall through to index.html."""
+        file_path = _FRONTEND_DIR / path
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(str(file_path))
+        return FileResponse(str(_FRONTEND_DIR / "index.html"))
+
+
+# ------------------------------------------------------------------
 # Entry point
 # ------------------------------------------------------------------
 if __name__ == "__main__":
