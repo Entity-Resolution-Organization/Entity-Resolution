@@ -202,6 +202,7 @@ gcp:
       - "sentencepiece==0.1.99"   
       - "pyyaml>=6.0"             
       - "pandas"                  
+      - "google-cloud-bigquery>=3.0.0"
     tmp_build_dir: "/tmp/er_push"
 
 # -----------------------------------------------------------------------------

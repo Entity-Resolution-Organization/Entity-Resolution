@@ -428,6 +428,9 @@ COPY config/ ./config/
 ENV MODEL_DIR=/app/model_weights
 ENV CONFIG_PATH=/app/config/training_config.yaml
 ENV ENTITY_TYPE={entity_type}
+ENV GCP_PROJECT_ID={gcp["project_id"]}
+ENV BQ_DATASET=entity_resolution
+ENV ENABLE_PREDICTION_LOG=true
 EXPOSE 8080
 ENV PYTHONPATH=/app
 CMD ["uvicorn", "scripts.serve:app", "--host", "0.0.0.0", "--port", "8080"]
@@ -591,6 +594,9 @@ def register_model_op(image_uri: str, gcs_bucket: str) -> str:
                 "CLASSIFICATION_THRESHOLD": str(
                     config["validation"]["classification_threshold"]
                 ),
+                "GCP_PROJECT_ID": gcp["project_id"],
+                "BQ_DATASET": "entity_resolution",
+                "ENABLE_PREDICTION_LOG": "true",
             },
             labels={
                 "entity_type": entity_type,
