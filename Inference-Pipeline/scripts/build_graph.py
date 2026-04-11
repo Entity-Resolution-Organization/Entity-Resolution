@@ -404,7 +404,9 @@ def _read_batch_predictions(gcs_output_prefix: str) -> dict[tuple, float]:
     return scores
 
 
-ONLINE_SCORING_THRESHOLD = int(os.environ.get("ONLINE_SCORING_THRESHOLD", 1000))
+ONLINE_SCORING_THRESHOLD = int(os.environ.get("ONLINE_SCORING_THRESHOLD", 50000))
+ONLINE_BATCH_SIZE        = int(os.environ.get("ONLINE_BATCH_SIZE", 50))
+ONLINE_WORKERS           = int(os.environ.get("ONLINE_WORKERS", 1))
 
 
 def _score_pairs_online(
@@ -413,9 +415,12 @@ def _score_pairs_online(
     cols: dict,
 ) -> dict[tuple, float]:
     """
-    Score pairs via the online endpoint (model_client).
-    Fast for small jobs — no container startup overhead.
+    Score pairs via the online endpoint with concurrent workers.
+    Chunks pairs into batches and fires them in parallel via
+    ThreadPoolExecutor — eliminates Batch Prediction cold start
+    and GCS staging round-trip entirely.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     from scripts.model_client import get_client
 
     name_col    = cols.get("name1", "name1")
@@ -425,26 +430,65 @@ def _score_pairs_online(
     if address_col not in df.columns:
         address_col = "address"
 
-    client = get_client()
+    client     = get_client()
+    batch_size = ONLINE_BATCH_SIZE
+    workers    = ONLINE_WORKERS
+    max_retries = 3
+
+    # Pre-build all input pairs
+    all_inputs = []
+    for a, b in pairs:
+        ra, rb = df.loc[a], df.loc[b]
+        all_inputs.append({
+            "pair_idx": (a, b),
+            "name1":    str(ra.get(name_col, "")),
+            "address1": str(ra.get(address_col, "")),
+            "name2":    str(rb.get(name_col, "")),
+            "address2": str(rb.get(address_col, "")),
+        })
+
+    # Chunk into batches
+    chunks = []
+    for i in range(0, len(all_inputs), batch_size):
+        chunks.append(all_inputs[i:i + batch_size])
+
+    log.info(
+        f"[Online] {len(pairs)} pairs → {len(chunks)} chunks "
+        f"(batch={batch_size}, workers={workers})"
+    )
+
     scores = {}
-    batch_size = 64
+    scored_count = 0
 
-    for i in range(0, len(pairs), batch_size):
-        batch = pairs[i:i + batch_size]
-        input_pairs = []
-        for a, b in batch:
-            ra, rb = df.loc[a], df.loc[b]
-            input_pairs.append({
-                "name1":    str(ra.get(name_col, "")),
-                "address1": str(ra.get(address_col, "")),
-                "name2":    str(rb.get(name_col, "")),
-                "address2": str(rb.get(address_col, "")),
-            })
-        results = client.predict(input_pairs)
-        for (a, b), result in zip(batch, results):
-            scores[(a, b)] = result.probability
-        log.info(f"[Online] Scored {min(i + batch_size, len(pairs))}/{len(pairs)}")
+    def _score_chunk(chunk):
+        input_pairs = [{k: v for k, v in item.items() if k != "pair_idx"} for item in chunk]
+        pair_idxs   = [item["pair_idx"] for item in chunk]
 
+        for attempt in range(max_retries):
+            try:
+                results = client.predict(input_pairs)
+                return list(zip(pair_idxs, [r.probability for r in results]))
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait = 5 * (2 ** attempt)  # 5s, 10s, 20s exponential backoff
+                    log.warning(f"[Online] Retry {attempt+1}: {e}. Waiting {wait}s...")
+                    time.sleep(wait)
+                else:
+                    log.error(f"[Online] Chunk failed after {max_retries} attempts: {e}")
+                    raise
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(_score_chunk, chunk): i for i, chunk in enumerate(chunks)}
+
+        for future in as_completed(futures):
+            results = future.result()
+            for pair_idx, prob in results:
+                scores[pair_idx] = prob
+            scored_count += len(results)
+            if scored_count % (batch_size * 10) < batch_size or scored_count == len(pairs):
+                log.info(f"[Online] Scored {scored_count}/{len(pairs)}")
+
+    log.info(f"[Online] Done — {len(scores)} scores")
     return scores
 
 

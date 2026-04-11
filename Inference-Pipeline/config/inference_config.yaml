@@ -34,8 +34,8 @@ gcp:
 # ------------------------------------------------------------------
 vertex_ai:
   endpoint_info_gcs_path: "models/endpoint_info.json"   # relative to bucket root
-  prediction_timeout_seconds: 30
-  max_batch_size: 256                        # max pairs per Vertex AI request
+  prediction_timeout_seconds: 120              # large batches need more time
+  max_batch_size: 200                        # GPU batches efficiently — send more pairs per request
 
 # ------------------------------------------------------------------
 # Mock Client (for development / demo when endpoint is down)
