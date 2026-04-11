@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect, useCallback, lazy, Suspense } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-const Plot = lazy(() => import('react-plotly.js'));
+import Plot from '../components/Plot';
 import {
   Upload, FileSpreadsheet, Loader2, ArrowRight, GripVertical,
   Check, AlertTriangle, X as XIcon, BarChart3, Table2, Layers,
@@ -757,7 +757,7 @@ export default function Batch() {
                   transition={{ delay: 0.1, ...spring }}
                 >
                   <h3 className="section-label mb-3">Decision distribution</h3>
-                  <Suspense fallback={<div className="h-[260px] skeleton" />}>
+
                   <Plot
                     data={[{
                       type: 'pie',
@@ -781,7 +781,6 @@ export default function Batch() {
                     config={plotlyConfig}
                     style={{ width: '100%' }}
                   />
-                  </Suspense>
                 </motion.div>
 
                 {/* Histogram */}
@@ -792,7 +791,7 @@ export default function Batch() {
                   transition={{ delay: 0.15, ...spring }}
                 >
                   <h3 className="section-label mb-3">Probability distribution</h3>
-                  <Suspense fallback={<div className="h-[260px] skeleton" />}>
+
                   <Plot
                     data={[{
                       type: 'histogram',
@@ -833,7 +832,6 @@ export default function Batch() {
                     config={plotlyConfig}
                     style={{ width: '100%' }}
                   />
-                  </Suspense>
                 </motion.div>
               </div>
             </div>

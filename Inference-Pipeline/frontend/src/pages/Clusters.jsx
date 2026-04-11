@@ -1,9 +1,8 @@
-import { useState, useRef, useEffect, lazy, Suspense } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Search, GitMerge, Users, ArrowRight, Loader2, Info } from 'lucide-react';
 import { spring, easeOut, dur, STAGGER_MS } from '../motion';
-
-const ForceGraph2D = lazy(() => import('react-force-graph-2d'));
+import ForceGraph2D from 'react-force-graph-2d';
 
 const DEMO_CLUSTER = {
   cluster_id: 'demo-transitive',
@@ -115,7 +114,6 @@ export default function Clusters() {
           transition={{ delay: 0.1, ...spring }}
         >
           {graphData && (
-            <Suspense fallback={<div className="flex items-center justify-center h-full"><Loader2 size={24} className="animate-spin text-[var(--text-muted)]" /></div>}>
               <ForceGraph2D
                 graphData={graphData}
                 width={dimensions.width}
@@ -170,7 +168,6 @@ export default function Clusters() {
                 d3VelocityDecay={0.3}
                 cooldownTicks={100}
               />
-            </Suspense>
           )}
 
           {/* Legend */}

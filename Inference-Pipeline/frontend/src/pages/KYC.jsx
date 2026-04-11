@@ -1,9 +1,8 @@
-import { useState, useRef, useEffect, lazy, Suspense } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { AlertTriangle, Shield, Eye, Loader2 } from 'lucide-react';
 import { spring, easeOut, dur, STAGGER_MS } from '../motion';
-
-const ForceGraph2D = lazy(() => import('react-force-graph-2d'));
+import ForceGraph2D from 'react-force-graph-2d';
 
 const NODES = [
   { id: 'P4-CRM-001', name: 'Maria Garcia', source: 'CRM', hop: 0, flagged: false },
@@ -105,7 +104,6 @@ export default function KYC() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1, ...spring }}
         >
-          <Suspense fallback={<div className="flex items-center justify-center h-full"><Loader2 size={24} className="animate-spin text-[var(--text-muted)]" /></div>}>
             <ForceGraph2D
               graphData={graphData}
               width={dimensions.width}
@@ -169,7 +167,6 @@ export default function KYC() {
               d3VelocityDecay={0.3}
               cooldownTicks={100}
             />
-          </Suspense>
 
           {/* Legend */}
           <div className="absolute bottom-4 left-4 flex gap-4 text-[10px] text-stone-400">
