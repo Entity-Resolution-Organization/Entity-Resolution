@@ -73,8 +73,10 @@ def monitor_op(
     # Return overall decision
     for et, r in results.items():
         decision = r.get("thresholds", {}).get("decision", "ERROR")
-        if decision == "RETRAIN":
-            return "RETRAIN"
+        if decision == "RETRAIN_DATA":
+            return "RETRAIN_DATA"
+        if decision == "RETRAIN_MODEL":
+            return "RETRAIN_MODEL"
 
     return "HEALTHY"
 
@@ -127,6 +129,61 @@ def trigger_retrain_op(
 
 
 @component(base_image=TRAINER_IMAGE)
+
+@component(base_image=TRAINER_IMAGE)
+def trigger_data_pipeline_op(
+    airflow_vm_ip: str,
+    gcs_bucket: str,
+) -> str:
+    """Triggers Airflow data pipeline via REST API, waits, then triggers ML pipeline."""
+    import json
+    import time
+    import urllib.request
+
+    # Trigger the data pipeline DAG
+    url = f"http://{airflow_vm_ip}:8080/api/v1/dags/er_data_pipeline/dagRuns"
+    payload = json.dumps({"conf": {"triggered_by": "monitoring_pipeline"}}).encode()
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "Basic " + __import__("base64").b64encode(b"airflow:airflow").decode(),
+        },
+    )
+
+    try:
+        resp = urllib.request.urlopen(req)
+        result = json.loads(resp.read().decode())
+        dag_run_id = result.get("dag_run_id", "unknown")
+        print(f"[trigger_data_pipeline_op] Data pipeline triggered: {dag_run_id}")
+    except Exception as e:
+        print(f"[trigger_data_pipeline_op] Failed to trigger data pipeline: {e}")
+        return "failed"
+
+    # Poll for completion (max 2 hours)
+    status_url = f"http://{airflow_vm_ip}:8080/api/v1/dags/er_data_pipeline/dagRuns/{dag_run_id}"
+    for i in range(240):  # 240 * 30s = 2 hours
+        time.sleep(30)
+        try:
+            status_req = urllib.request.Request(
+                status_url,
+                headers={
+                    "Authorization": "Basic " + __import__("base64").b64encode(b"airflow:airflow").decode(),
+                },
+            )
+            resp = urllib.request.urlopen(status_req)
+            state = json.loads(resp.read().decode()).get("state", "unknown")
+            print(f"[trigger_data_pipeline_op] Poll {i+1}: {state}")
+            if state == "success":
+                return "success"
+            elif state == "failed":
+                return "failed"
+        except Exception as e:
+            print(f"[trigger_data_pipeline_op] Poll error: {e}")
+
+    return "timeout"
+
 def alert_op(reason: str, decision: str) -> None:
     """Send notification about monitoring result."""
     import json
@@ -179,22 +236,40 @@ def er_monitoring_pipeline(
         .set_cpu_limit("4")
         .set_memory_limit("16G")
     )
+    # Step 2: If DATA DRIFT, trigger data pipeline first, then ML pipeline
+    with dsl.If(monitor_task.output == "RETRAIN_DATA", name="if-retrain-data"):
+        data_task = trigger_data_pipeline_op(
+            airflow_vm_ip="34.31.109.57",
+            gcs_bucket=gcs_bucket,
+        ).set_display_name("trigger_data_pipeline")
 
-    # Step 2: If RETRAIN, trigger training pipeline
-    with dsl.If(monitor_task.output == "RETRAIN", name="if-retrain"):
         trigger_task = trigger_retrain_op(
             gcs_bucket=gcs_bucket,
             project_id=project_id,
             region=region,
             mlflow_tracking_uri=mlflow_tracking_uri,
-        ).set_display_name("trigger_retraining")
+        ).set_display_name("trigger_retraining_after_data").after(data_task)
 
         alert_op(
-            reason="Model decay or data drift detected. Retraining triggered.",
-            decision="RETRAIN",
-        ).set_display_name("alert_retrain").after(trigger_task)
+            reason="Data drift detected. Data pipeline + retraining triggered.",
+            decision="RETRAIN_DATA",
+        ).set_display_name("alert_retrain_data").after(trigger_task)
 
-    # Step 3: If HEALTHY, just notify
+    # Step 3: If MODEL DRIFT, trigger ML pipeline only
+    with dsl.If(monitor_task.output == "RETRAIN_MODEL", name="if-retrain-model"):
+        trigger_task_model = trigger_retrain_op(
+            gcs_bucket=gcs_bucket,
+            project_id=project_id,
+            region=region,
+            mlflow_tracking_uri=mlflow_tracking_uri,
+        ).set_display_name("trigger_retraining_model_only")
+
+        alert_op(
+            reason="Model performance degraded. Retraining triggered.",
+            decision="RETRAIN_MODEL",
+        ).set_display_name("alert_retrain_model").after(trigger_task_model)
+
+    # Step 4: If HEALTHY, just notify
     with dsl.If(monitor_task.output == "HEALTHY", name="if-healthy"):
         alert_op(
             reason="All metrics within thresholds. No action needed.",

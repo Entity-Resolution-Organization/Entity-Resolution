@@ -269,7 +269,12 @@ class ModelMonitor:
         }
 
         all_ok = all(checks.values())
-        decision = "HEALTHY" if all_ok else "RETRAIN"
+        if all_ok:
+            decision = "HEALTHY"
+        elif not checks["drift_ok"]:
+            decision = "RETRAIN_DATA"
+        else:
+            decision = "RETRAIN_MODEL"
 
         for check, passed in checks.items():
             print(f"  {check}: {'PASS' if passed else 'FAIL'}")
