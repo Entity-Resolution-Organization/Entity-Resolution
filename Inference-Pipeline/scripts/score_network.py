@@ -390,23 +390,20 @@ def write_scores_to_bigquery(
     table_id = f"{project}.{dataset}.{table}"
     client   = bigquery.Client(project=project)
 
+    # Delete existing rows if table exists
     try:
         client.get_table(table_id)
+        client.query(
+            f"DELETE FROM `{table_id}` WHERE cluster_id IN "
+            f"(SELECT cluster_id FROM `{project}.{dataset}.{cfg_bq['clusters_table']}` "
+            f"WHERE job_suffix = '{job_suffix}')"
+        ).result()
     except Exception:
-        tbl = bigquery.Table(table_id, schema=BQ_NETWORK_SCORES_SCHEMA)
-        client.create_table(tbl)
-        log.info(f"[BQ] Created table {table_id}")
-
-    # Delete existing rows for this job_suffix before re-inserting
-    client.query(
-        f"DELETE FROM `{table_id}` WHERE cluster_id IN "
-        f"(SELECT cluster_id FROM `{project}.{dataset}.{cfg_bq['clusters_table']}` "
-        f"WHERE job_suffix = '{job_suffix}')"
-    ).result()
+        pass  # table doesn't exist yet — will be created on load
 
     job_cfg = bigquery.LoadJobConfig(
         write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
-        schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION],
+        autodetect=True,
     )
     df_copy = scores_df.copy()
     df_copy["scored_at"] = pd.to_datetime(df_copy["scored_at"]).dt.date

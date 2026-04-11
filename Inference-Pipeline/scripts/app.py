@@ -8,6 +8,9 @@ Endpoints:
   POST /resolve          - Single pair resolution
   POST /resolve/batch    - Batch resolution (up to 1000 pairs)
   POST /search           - Entity search against analytics dataset
+  POST /unify/upload     - Upload CSV for full graph pipeline (cluster assignment)
+  GET  /unify/status/{id} - Poll job status
+  GET  /unify/download/{id} - Download unified CSV with cluster_ids
   GET  /health           - API + endpoint connectivity status
   GET  /metrics/pipeline - Pipeline quality gate + bias + model metrics
   GET  /metrics/inference - Runtime inference stats
@@ -26,11 +29,13 @@ from pathlib import Path
 from typing import List
 
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from scripts.model_client import PredictionResult, get_client
+from scripts.pipeline_runner import create_job_id, job_store, run_unify_pipeline
 from scripts.preprocess import InferencePreprocessor
 
 # ------------------------------------------------------------------
@@ -386,6 +391,137 @@ async def metrics_inference():
             "NO-MATCH": int(_inference_stats["no_match_count"]),
             "REVIEW": int(_inference_stats["review_count"]),
         },
+    }
+
+
+# ------------------------------------------------------------------
+# POST /unify/upload  — upload CSV for graph pipeline
+# ------------------------------------------------------------------
+_TRAINING_CONFIG_PATH = Path(__file__).parent.parent.parent / "Model-Pipeline" / "config" / "training_config.yaml"
+
+
+def _load_training_config() -> dict:
+    path = os.environ.get("CONFIG_PATH", str(_TRAINING_CONFIG_PATH))
+    with open(path) as f:
+        return yaml.safe_load(f)
+
+
+@app.post("/unify/upload")
+async def unify_upload(file: UploadFile, background_tasks: BackgroundTasks):
+    """
+    Upload a records CSV. Triggers the full pipeline as a background task:
+    build_graph -> write_clusters -> (optional) score_network.
+    Returns a job_id to poll for status.
+    """
+    if not file.filename or not file.filename.endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only CSV files accepted")
+
+    # Read file content
+    content = await file.read()
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    # Upload to GCS to-process/
+    try:
+        from google.cloud import storage as gcs
+
+        training_cfg = _load_training_config()
+        bucket_name = training_cfg["data"]["gcs_bucket"]
+        blob_name = f"to-process/{file.filename}"
+        gcs_path = f"gs://{bucket_name}/{blob_name}"
+
+        client = gcs.Client()
+        client.bucket(bucket_name).blob(blob_name).upload_from_string(
+            content, content_type="text/csv"
+        )
+        logger.info(f"[Unify] Uploaded {len(content)} bytes -> {gcs_path}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"GCS upload failed: {e}")
+
+    # Resolve model resource name
+    from scripts.build_graph import resolve_model_resource_name
+    model_resource_name = resolve_model_resource_name(training_cfg)
+
+    # Create job and launch background pipeline
+    job_id = create_job_id()
+    background_tasks.add_task(
+        run_unify_pipeline,
+        job_id=job_id,
+        records_gcs_path=gcs_path,
+        config=training_cfg,
+        model_resource_name=model_resource_name,
+        run_scoring=True,
+    )
+
+    return {"job_id": job_id, "status": "queued", "gcs_path": gcs_path}
+
+
+# ------------------------------------------------------------------
+# GET /unify/status/{job_id}  — poll job progress
+# ------------------------------------------------------------------
+@app.get("/unify/status/{job_id}")
+async def unify_status(job_id: str):
+    """Return current status of a unify pipeline job."""
+    if job_id not in job_store:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job_store[job_id]
+
+
+# ------------------------------------------------------------------
+# GET /unify/download/{job_id}  — download unified CSV
+# ------------------------------------------------------------------
+@app.get("/unify/download/{job_id}")
+async def unify_download(job_id: str):
+    """Download the unified CSV with cluster assignments."""
+    if job_id not in job_store:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = job_store[job_id]
+    if job["status"] != "complete":
+        raise HTTPException(status_code=409, detail=f"Job not complete: {job['status']}")
+
+    unified_path = job.get("unified_gcs_path")
+    if not unified_path:
+        raise HTTPException(status_code=404, detail="No unified CSV available")
+
+    try:
+        from io import BytesIO
+
+        from google.cloud import storage as gcs
+
+        bucket_name, blob_name = unified_path.replace("gs://", "").split("/", 1)
+        content = gcs.Client().bucket(bucket_name).blob(blob_name).download_as_bytes()
+
+        return StreamingResponse(
+            BytesIO(content),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename={job['job_suffix']}_unified.csv"
+            },
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Download failed: {e}")
+
+
+# ------------------------------------------------------------------
+# GET /unify/jobs  — list all jobs
+# ------------------------------------------------------------------
+@app.get("/unify/jobs")
+async def unify_jobs():
+    """List all pipeline jobs with their status."""
+    return {
+        "jobs": [
+            {
+                "job_id": j["job_id"],
+                "status": j["status"],
+                "stage": j["stage"],
+                "job_suffix": j["job_suffix"],
+                "created_at": j["created_at"],
+                "completed_at": j.get("completed_at"),
+                "stats": j.get("stats", {}),
+            }
+            for j in job_store.values()
+        ]
     }
 
 

@@ -14,4 +14,18 @@ export const getHealth = () => api.get('/health');
 export const getPipelineMetrics = () => api.get('/metrics/pipeline');
 export const getInferenceMetrics = () => api.get('/metrics/inference');
 
+// Unify pipeline (CSV upload -> graph -> clusters -> download)
+export const uploadUnify = (file) => {
+  const form = new FormData();
+  form.append('file', file);
+  return api.post('/unify/upload', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 60000,
+  });
+};
+export const getUnifyStatus = (jobId) => api.get(`/unify/status/${jobId}`);
+export const getUnifyJobs = () => api.get('/unify/jobs');
+export const downloadUnified = (jobId) =>
+  api.get(`/unify/download/${jobId}`, { responseType: 'blob' });
+
 export default api;

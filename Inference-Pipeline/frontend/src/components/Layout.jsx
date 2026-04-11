@@ -3,19 +3,21 @@ import { NavLink, Outlet } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Home, GitCompare, LayoutGrid, Share2, Upload, BarChart3, Activity, Shield,
-  Fingerprint, Menu, X,
+  Fingerprint, Menu, X, GitMerge, User, ShieldAlert, Eye, TrendingUp,
 } from 'lucide-react';
 import { springSnappy } from '../motion';
 
 const NAV_ITEMS = [
-  { to: '/',          icon: Home,       label: 'Home' },
-  { to: '/resolve',   icon: GitCompare, label: 'Resolve' },
-  { to: '/scenarios', icon: LayoutGrid, label: 'Scenarios' },
-  { to: '/network',   icon: Share2,     label: 'Network' },
-  { to: '/batch',     icon: Upload,     label: 'Batch' },
-  { to: '/pipeline',  icon: BarChart3,  label: 'Pipeline' },
-  { to: '/monitor',   icon: Activity,   label: 'Monitor' },
-  { to: '/fraud',     icon: Shield,     label: 'Fraud' },
+  { to: '/',             icon: Home,        label: 'Home' },
+  { to: '/resolve',      icon: GitCompare,  label: 'Resolve' },
+  { to: '/batch',        icon: Upload,      label: 'Batch' },
+  { to: '/clusters',     icon: GitMerge,    label: 'Clusters' },
+  { to: '/customer360',  icon: User,        label: '360' },
+  { to: '/veto',         icon: ShieldAlert, label: 'Veto' },
+  { to: '/kyc',          icon: Eye,         label: 'KYC' },
+  { to: '/fraud',        icon: Shield,      label: 'Fraud' },
+  { to: '/analytics',    icon: TrendingUp,  label: 'Analytics' },
+  { to: '/pipeline',     icon: BarChart3,   label: 'Pipeline' },
 ];
 
 export default function Layout() {

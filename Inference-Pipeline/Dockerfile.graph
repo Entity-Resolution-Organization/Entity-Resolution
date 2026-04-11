@@ -1,0 +1,29 @@
+FROM python:3.10-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential curl \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+    pandas==2.2.2 \
+    pyyaml==6.0.1 \
+    google-cloud-storage==2.16.0 \
+    google-cloud-aiplatform==1.55.0 \
+    google-cloud-bigquery==3.21.0 \
+    google-auth==2.29.0 \
+    networkx==3.3 \
+    mlflow==2.13.0 \
+    numpy==1.26.4
+
+COPY scripts/build_graph.py     scripts/build_graph.py
+COPY scripts/write_clusters.py  scripts/write_clusters.py
+COPY scripts/score_network.py   scripts/score_network.py
+COPY config/                    config/
+
+ENV PYTHONUNBUFFERED=1 \
+    CONFIG_PATH=config/training_config.yaml
+
+ENTRYPOINT ["python"]

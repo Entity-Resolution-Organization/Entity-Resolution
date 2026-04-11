@@ -404,6 +404,50 @@ def _read_batch_predictions(gcs_output_prefix: str) -> dict[tuple, float]:
     return scores
 
 
+ONLINE_SCORING_THRESHOLD = int(os.environ.get("ONLINE_SCORING_THRESHOLD", 1000))
+
+
+def _score_pairs_online(
+    pairs: list[tuple],
+    df: pd.DataFrame,
+    cols: dict,
+) -> dict[tuple, float]:
+    """
+    Score pairs via the online endpoint (model_client).
+    Fast for small jobs — no container startup overhead.
+    """
+    from scripts.model_client import get_client
+
+    name_col    = cols.get("name1", "name1")
+    address_col = cols.get("address1", "address1")
+    if name_col not in df.columns:
+        name_col = "name"
+    if address_col not in df.columns:
+        address_col = "address"
+
+    client = get_client()
+    scores = {}
+    batch_size = 64
+
+    for i in range(0, len(pairs), batch_size):
+        batch = pairs[i:i + batch_size]
+        input_pairs = []
+        for a, b in batch:
+            ra, rb = df.loc[a], df.loc[b]
+            input_pairs.append({
+                "name1":    str(ra.get(name_col, "")),
+                "address1": str(ra.get(address_col, "")),
+                "name2":    str(rb.get(name_col, "")),
+                "address2": str(rb.get(address_col, "")),
+            })
+        results = client.predict(input_pairs)
+        for (a, b), result in zip(batch, results):
+            scores[(a, b)] = result.probability
+        log.info(f"[Online] Scored {min(i + batch_size, len(pairs))}/{len(pairs)}")
+
+    return scores
+
+
 def score_pairs_deberta(
     pairs: list[tuple],
     df: pd.DataFrame,
@@ -413,9 +457,19 @@ def score_pairs_deberta(
     job_suffix: str,
 ) -> dict[tuple, float]:
     """
-    Score all candidate pairs via Vertex AI Batch Prediction.
-    job_suffix namespaces staging paths — no date needed.
+    Score candidate pairs via DeBERTa model.
+    Uses online endpoint for small jobs (< ONLINE_SCORING_THRESHOLD pairs),
+    Vertex AI Batch Prediction for large jobs.
     """
+    # Small job — use online endpoint directly (no container startup)
+    if len(pairs) <= ONLINE_SCORING_THRESHOLD:
+        log.info(
+            f"[Scoring] {len(pairs)} pairs <= {ONLINE_SCORING_THRESHOLD} "
+            f"— using online endpoint"
+        )
+        return _score_pairs_online(pairs, df, cols)
+
+    # Large job — batch prediction
     log.info(f"[BatchPred] Scoring {len(pairs)} pairs  suffix={job_suffix}")
 
     input_gcs  = f"{gcs_staging_prefix}/{job_suffix}/batch_input/pairs.jsonl"
@@ -550,95 +604,21 @@ def enrich_edge(
 
 
 # =============================================================================
-# Node features — DeBERTa [CLS] embeddings
+# Node features — record ID manifest (embeddings shelved with GNN)
 # =============================================================================
 
-def extract_node_embeddings(
-    df: pd.DataFrame,
-    cols: dict,
-    config: dict,
-    entity_type: str = "person",
-) -> pd.DataFrame:
-    import pathlib
-    import torch
-    from transformers import AutoTokenizer, AutoModelForSequenceClassification
-    from peft import PeftModel
-    from google.cloud import storage as gcs_storage
-
-    log.info("[Embeddings] Extracting DeBERTa [CLS] node embeddings…")
-
-    cache_dir       = config["model"].get("cache_dir", "/app/cache")
-    base_model_name = config["model"]["base_model"]
-    base_dir        = config["output"]["base_dir"]
-    model_dir       = config["output"]["model_dir"].format(
-        base_dir=base_dir, entity_type=entity_type
-    )
-    final_model_dir = config["output"]["final_model_dir"].format(
-        base_dir=base_dir, model_dir=model_dir, entity_type=entity_type
-    )
-
-    # Download weights from GCS if not present locally
-    p = pathlib.Path(final_model_dir)
-    if not p.exists() or not any(p.iterdir()):
-        log.info(f"[Embeddings] Downloading weights from GCS → {final_model_dir}")
-        bucket_name = config["data"]["gcs_bucket"]
-        gcs_prefix  = f"models/{entity_type}/final_model"
-        client      = gcs_storage.Client()
-        for blob in client.list_blobs(bucket_name, prefix=gcs_prefix):
-            if blob.name.endswith("/"):
-                continue
-            rel   = blob.name.replace(gcs_prefix + "/", "", 1)
-            local = p / rel
-            local.parent.mkdir(parents=True, exist_ok=True)
-            blob.download_to_filename(str(local))
-
-    log.info(f"[Embeddings] Loading from {final_model_dir}")
-    tokenizer = AutoTokenizer.from_pretrained(final_model_dir, cache_dir=cache_dir)
-    base      = AutoModelForSequenceClassification.from_pretrained(
-        base_model_name, num_labels=2, cache_dir=cache_dir
-    )
-    model = PeftModel.from_pretrained(base, final_model_dir).merge_and_unload()
-    model.eval()
-
-    # Resolve name/address columns — support both pair-style and record-style
-    name_col    = cols.get("name1", "name1")
-    address_col = cols.get("address1", "address1")
-    if name_col not in df.columns:
-        name_col = "name"
-    if address_col not in df.columns:
-        address_col = "address"
-
-    embeddings = []
-    with torch.no_grad():
-        for i in range(0, len(df), 32):
-            batch = df.iloc[i: i + 32]
-            texts = [
-                f"record name: {_safe_str(row.get(name_col, ''))} "
-                f"address: {_safe_str(row.get(address_col, ''))}"
-                for _, row in batch.iterrows()
-            ]
-            enc = tokenizer(
-                texts, truncation=True, padding=True,
-                max_length=config["model"]["max_length"],
-                return_tensors="pt",
-            )
-            enc = {k: v for k, v in enc.items() if k != "token_type_ids"}
-            out = model.deberta(**enc)
-            embeddings.extend(out.last_hidden_state[:, 0, :].numpy())
-
-    emb_df = pd.DataFrame(
-        embeddings,
-        index=df.index,
-        columns=[f"emb_{i}" for i in range(embeddings[0].shape[0])],
-    )
-
-    # Resolve id column — support both id1 (pairs) and id (records)
+def build_node_features(df: pd.DataFrame, cols: dict) -> pd.DataFrame:
+    """
+    Build a minimal node_features.csv with record_id.
+    Embeddings shelved until GNN is reintroduced — write_clusters.py
+    only needs the record_id column from this file.
+    """
     id_col = cols.get("id1", "id1")
     if id_col not in df.columns:
         id_col = "id"
-    emb_df.insert(0, "record_id", df[id_col].astype(str).values)
-    log.info(f"[Embeddings] {len(emb_df)} node embeddings extracted")
-    return emb_df
+    node_df = pd.DataFrame({"record_id": df[id_col].astype(str).values})
+    log.info(f"[Nodes] {len(node_df)} record IDs extracted")
+    return node_df
 
 
 # =============================================================================
@@ -886,8 +866,8 @@ def build_graph(
     rest     = [c for c in edges_df.columns if c not in front]
     edges_df = edges_df[front + rest]
 
-    # 6. Node embeddings
-    node_df = extract_node_embeddings(df, cols, config, entity_type)
+    # 6. Node ID manifest (embeddings shelved with GNN)
+    node_df = build_node_features(df, cols)
 
     # 7. Upload — namespaced by entity_type/job_suffix (no date in path)
     edges_path = f"{output_prefix}/{entity_type}/{job_suffix}/enriched_edges.csv"
