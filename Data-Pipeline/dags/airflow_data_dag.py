@@ -10,13 +10,17 @@ Pipeline creates training data and analytics outputs for PERSON entity resolutio
    - All PERSON datasets merged for bias analysis
    - Output: data/analytics/merged_all.csv
 
+3. MODEL PIPELINE TRIGGER:
+   - After successful data upload, submits the Model Pipeline to Vertex AI
+   - Fire-and-forget: does not wait for training to complete
+
 TASK STRUCTURE:
 - N load tasks (parallel, driven by config)
 - 1 validate_all_raw task
 - N transform tasks (parallel)
 - 1 organize_datasets task (creates training + analytics outputs)
 - 3 validation tasks (parallel): training_splits, schema, bias
-- Quality gate → DVC versioning → GCS upload → Done
+- Quality gate → DVC versioning → GCS upload → Model trigger → Done
 """
 
 import json
@@ -54,6 +58,24 @@ CONFIG_PATH = "/opt/airflow/config/datasets.yaml"
 GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID", "")
 GCS_BUCKET = os.getenv("GCS_BUCKET", "")
 DVC_GCS_BUCKET = os.getenv("DVC_GCS_BUCKET", "entity-resolution-dvc-bucket")
+
+# Model Pipeline trigger config
+MODEL_PIPELINE_TEMPLATE_PATH = os.getenv(
+    "MODEL_PIPELINE_TEMPLATE_PATH",
+    "gs://entity-resolution-bucket-1/pipelines/pipeline.yaml",
+)
+MODEL_PIPELINE_ROOT = os.getenv(
+    "MODEL_PIPELINE_ROOT",
+    "gs://entity-resolution-bucket-1/pipeline-root",
+)
+VERTEX_AI_STAGING_BUCKET = os.getenv(
+    "VERTEX_AI_STAGING_BUCKET",
+    "gs://entity-resolution-staging-bucket",
+)
+MODEL_PIPELINE_GCS_BUCKET = os.getenv(
+    "MODEL_PIPELINE_GCS_BUCKET",
+    "entity-resolution-bucket-1",
+)
 
 MIN_RECORDS_PER_DATASET = 100
 
@@ -676,6 +698,103 @@ def upload_to_gcs(**context):
 
 
 # =============================================================================
+# PHASE 9: TRIGGER MODEL PIPELINE
+# =============================================================================
+def trigger_model_pipeline(**context):
+    """
+    Submit the Model Pipeline to Vertex AI Pipelines (fire-and-forget).
+
+    Reads the pre-compiled pipeline template from GCS and submits it
+    with the current MLflow URI and GCS bucket. Does not wait for
+    the Model Pipeline to complete — Vertex AI handles execution
+    independently.
+    """
+    if not GCP_PROJECT_ID:
+        print("[Model Trigger] GCP_PROJECT_ID not set, skipping trigger")
+        return {"status": "skipped", "reason": "no_project_id"}
+
+    if not MODEL_PIPELINE_TEMPLATE_PATH:
+        print("[Model Trigger] MODEL_PIPELINE_TEMPLATE_PATH not set, skipping trigger")
+        return {"status": "skipped", "reason": "no_template_path"}
+
+    print("[Model Trigger] Submitting Model Pipeline to Vertex AI...")
+    print(f"[Model Trigger] Template: {MODEL_PIPELINE_TEMPLATE_PATH}")
+
+    from google.cloud import aiplatform, storage
+
+    # Read MLflow URI from GCS (same source as Model Pipeline's utils.py)
+    mlflow_uri = ""
+    try:
+        mlflow_uri = (
+            storage.Client()
+            .bucket(MODEL_PIPELINE_GCS_BUCKET)
+            .blob("config/mlflow_uri.txt")
+            .download_as_text()
+            .strip()
+        )
+        print(f"[Model Trigger] MLflow URI: {mlflow_uri}")
+    except Exception as e:
+        print(f"[Model Trigger] WARNING: Could not read MLflow URI from GCS: {e}")
+        print("[Model Trigger] Model Pipeline will use its own fallback")
+
+    # Initialize Vertex AI SDK
+    aiplatform.init(
+        project=GCP_PROJECT_ID,
+        location="us-central1",
+        staging_bucket=VERTEX_AI_STAGING_BUCKET,
+    )
+
+    # Submit pipeline job
+    run_id = context.get("run_id", "unknown")
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    job = aiplatform.PipelineJob(
+        display_name=f"er-model-pipeline-auto-{timestamp}",
+        template_path=MODEL_PIPELINE_TEMPLATE_PATH,
+        pipeline_root=MODEL_PIPELINE_ROOT,
+        parameter_values={
+            "mlflow_tracking_uri": mlflow_uri,
+            "gcs_bucket": MODEL_PIPELINE_GCS_BUCKET,
+            "rollback_threshold": 0.02,
+            "deploy_machine_type": "n1-standard-4",
+            "min_replicas": 1,
+            "max_replicas": 3,
+        },
+        enable_caching=False,
+    )
+
+    # Fire-and-forget: submit() returns immediately, run() would block
+    job.submit()
+
+    vertex_url = (
+        f"https://console.cloud.google.com/vertex-ai/pipelines/runs/"
+        f"{job.resource_name.split('/')[-1]}"
+        f"?project={GCP_PROJECT_ID}"
+    )
+
+    print(f"[Model Trigger] Pipeline submitted successfully")
+    print(f"[Model Trigger] Job name: {job.display_name}")
+    print(f"[Model Trigger] Monitor: {vertex_url}")
+
+    trigger_info = {
+        "status": "submitted",
+        "display_name": job.display_name,
+        "resource_name": job.resource_name,
+        "vertex_url": vertex_url,
+        "triggered_by_run_id": str(run_id),
+        "timestamp": timestamp,
+    }
+
+    # Save trigger info to metrics for audit trail
+    trigger_path = f"{BASE_DIR}/metrics/model_pipeline_trigger.json"
+    os.makedirs(os.path.dirname(trigger_path), exist_ok=True)
+    with open(trigger_path, "w") as f:
+        json.dump(trigger_info, f, indent=2)
+
+    return trigger_info
+
+
+# =============================================================================
 # DAG DEFINITION
 # =============================================================================
 default_args = {
@@ -701,7 +820,7 @@ with DAG(
     - **Analytics**: Merged data for cross-dataset bias analysis
     ## Flow
     Load (parallel) → Validate → Transform (parallel) → Organize →
-    Validate (parallel) → Quality Gate → DVC → GCS Upload
+    Validate (parallel) → Quality Gate → DVC → GCS Upload → Model Trigger
     """,
 ) as dag:
 
@@ -772,6 +891,12 @@ with DAG(
         python_callable=upload_to_gcs,
     )
 
+    # Phase 9: Trigger Model Pipeline
+    trigger_model_task = PythonOperator(
+        task_id="trigger_model_pipeline",
+        python_callable=trigger_model_pipeline,
+    )
+
     pipeline_complete = EmptyOperator(
         task_id="pipeline_complete",
         trigger_rule="none_failed_min_one_success",
@@ -788,4 +913,10 @@ with DAG(
 
     organize_task >> [validate_splits_task, schema_task, bias_task]
     [validate_splits_task, schema_task, bias_task] >> quality_gate_task
-    quality_gate_task >> dvc_track_task >> upload_gcs_task >> pipeline_complete
+    (
+        quality_gate_task
+        >> dvc_track_task
+        >> upload_gcs_task
+        >> trigger_model_task
+        >> pipeline_complete
+    )
