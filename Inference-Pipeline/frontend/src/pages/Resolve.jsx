@@ -293,7 +293,7 @@ export default function Resolve() {
         {loading ? (
           <><Loader2 size={16} className="animate-spin" aria-hidden="true" /><span>Resolving...</span></>
         ) : (
-          <><Zap size={16} aria-hidden="true" /><span>Resolve entities</span></>
+          <><Zap size={16} aria-hidden="true" /><span>Compare</span></>
         )}
       </button>
 
