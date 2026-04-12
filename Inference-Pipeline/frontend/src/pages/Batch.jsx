@@ -1,48 +1,12 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import Plot from '../components/Plot';
+import { motion } from 'framer-motion';
 import {
-  Upload, FileSpreadsheet, Loader2, ArrowRight, GripVertical,
-  Check, AlertTriangle, X as XIcon, BarChart3, Table2, Layers,
-  Download, GitMerge, Clock, CheckCircle2, XCircle,
+  Upload, FileSpreadsheet, Loader2, ArrowRight,
+  Check, AlertTriangle, Table2,
+  Download, GitMerge, CheckCircle2, XCircle,
 } from 'lucide-react';
-import { resolveEntities, uploadUnify, getUnifyStatus, downloadUnified } from '../api/client';
+import { uploadUnify, getUnifyStatus, downloadUnified } from '../api/client';
 import { spring, easeOut, dur, STAGGER_MS } from '../motion';
-
-/* -- Sample data ----------------------------------------- */
-const SAMPLE = [
-  { name1: 'Robert Smith', address1: '123 Main Street', name2: 'Bob Smith', address2: '123 Main St' },
-  { name1: 'John Doe', address1: '456 Elm Avenue', name2: 'John Doe', address2: '456 Elm Ave' },
-  { name1: 'Maria Garcia', address1: '789 Oak Blvd', name2: 'Maria Garcia', address2: '100 Pine Road' },
-  { name1: 'Mohammad Al-Rashid', address1: '45 Desert Rd', name2: 'Mohammed Al Rashid', address2: '45 Desert Road' },
-  { name1: 'Alice Johnson', address1: '200 Park Ave', name2: 'Robert Smith', address2: '200 Park Ave' },
-];
-
-const TARGET_FIELDS = ['name1', 'address1', 'name2', 'address2', 'email', 'dob', 'phone'];
-const FIELD_LABELS = {
-  name1: 'Name (Entity A)', address1: 'Address (Entity A)',
-  name2: 'Name (Entity B)', address2: 'Address (Entity B)',
-  email: 'Email', dob: 'Date of Birth', phone: 'Phone',
-};
-
-/* -- Row background by decision -------------------------- */
-const rowBg = (decision) => {
-  if (decision === 'MATCH') return 'rgba(5, 150, 105, 0.04)';
-  if (decision === 'REVIEW') return 'rgba(180, 83, 9, 0.04)';
-  if (decision === 'NO-MATCH') return 'rgba(220, 38, 38, 0.04)';
-  return 'transparent';
-};
-
-/* -- Plotly shared config -------------------------------- */
-const plotlyConfig = { displayModeBar: false, responsive: true };
-
-const plotlyFont = { color: '#64748b', family: 'Outfit, system-ui' };
-
-const axisDefaults = {
-  color: '#64748b',
-  gridcolor: 'rgba(0,0,0,0.06)',
-  zerolinecolor: 'rgba(0,0,0,0.06)',
-};
 
 /* -- Unify pipeline stages ------------------------------ */
 const STAGES = [
@@ -238,8 +202,9 @@ function UnifyPanel() {
           <h3 className="section-label mb-4">Pipeline progress</h3>
           <div className="flex items-center gap-2">
             {STAGES.map((s, i) => {
-              const active = s.key === job.stage;
-              const done = i < stageIdx;
+              const isComplete = job.status === 'complete';
+              const active = !isComplete && s.key === job.stage;
+              const done = isComplete || i < stageIdx;
               return (
                 <div key={s.key} className="flex items-center gap-2 flex-1">
                   <div className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-medium shrink-0 transition-colors ${
