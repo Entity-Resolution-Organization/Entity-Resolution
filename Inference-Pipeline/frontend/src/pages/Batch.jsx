@@ -55,7 +55,7 @@ const STAGES = [
 
 function UnifyPanel() {
   const [file, setFile] = useState(null);
-  const [jobId, setJobId] = useState(null);
+  const [jobId, setJobId] = useState(() => localStorage.getItem('unify_job_id') || null);
   const [job, setJob] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState(null);
@@ -64,7 +64,7 @@ function UnifyPanel() {
 
   const handleFile = (e) => {
     const f = e.target.files?.[0];
-    if (f) { setFile(f); setErr(null); setJob(null); setJobId(null); setPreviewData(null); }
+    if (f) { setFile(f); setErr(null); setJob(null); setJobId(null); setPreviewData(null); localStorage.removeItem('unify_job_id'); }
   };
 
   const handleUpload = async () => {
@@ -73,6 +73,7 @@ function UnifyPanel() {
     try {
       const { data } = await uploadUnify(file);
       setJobId(data.job_id);
+      localStorage.setItem('unify_job_id', data.job_id);
     } catch (e) {
       setErr(e.response?.data?.detail || 'Upload failed');
     } finally {
@@ -485,7 +486,7 @@ export default function Batch() {
         transition={{ delay: 0.05, duration: dur.normal, ease: easeOut }}
       >
         <button
-          onClick={() => setMode('sample')}
+          onClick={() => { setMode('sample'); setResults(null); }}
           className={`flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-medium transition-colors ${
             mode === 'sample'
               ? 'bg-[var(--accent-dim)] text-[var(--accent)] border border-[var(--border-accent)]'
@@ -496,7 +497,7 @@ export default function Batch() {
           Sample data
         </button>
         <button
-          onClick={() => setMode('csv')}
+          onClick={() => { setMode('csv'); setResults(null); }}
           className={`flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-medium transition-colors ${
             mode === 'csv'
               ? 'bg-[var(--accent-dim)] text-[var(--accent)] border border-[var(--border-accent)]'
@@ -507,7 +508,7 @@ export default function Batch() {
           Upload CSV
         </button>
         <button
-          onClick={() => setMode('unify')}
+          onClick={() => { setMode('unify'); setResults(null); }}
           className={`flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-medium transition-colors ${
             mode === 'unify'
               ? 'bg-[var(--accent-dim)] text-[var(--accent)] border border-[var(--border-accent)]'
@@ -687,8 +688,8 @@ export default function Batch() {
         )}
       </motion.button>}
 
-      {/* Progress bar */}
-      <div aria-live="polite">
+      {/* Progress bar + results (pairwise modes only) */}
+      {mode !== 'unify' && <div aria-live="polite">
       <AnimatePresence>
         {loading && (
           <motion.div
@@ -895,10 +896,10 @@ export default function Batch() {
           </motion.div>
         )}
       </AnimatePresence>
-      </div>
+      </div>}
 
-      {/* Empty state */}
-      {!results && !loading && (
+      {/* Empty state (pairwise modes only) */}
+      {mode !== 'unify' && !results && !loading && (
         <motion.div
           className="mt-16 flex flex-col items-center justify-center py-20 text-center"
           initial={{ opacity: 0 }}

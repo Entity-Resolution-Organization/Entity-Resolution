@@ -304,6 +304,7 @@ def build_unified_csv(
     entity_clusters_df: pd.DataFrame,
     job_suffix: str,
     bucket: str,
+    source_records_path: str = "",
 ) -> str:
     """
     Join cluster assignments back onto original records.
@@ -317,10 +318,31 @@ def build_unified_csv(
         "avg_edge_score", "requires_review",
     ]].copy()
 
-    # node_features.csv has record_id + emb_* columns
-    # We only want record_id for the join — drop embeddings for output
-    emb_cols = [c for c in nodes_df.columns if c.startswith("emb_")]
-    records   = nodes_df.drop(columns=emb_cols)
+    # Load original source records if available (has name, address, etc.)
+    if source_records_path:
+        try:
+            source_content = storage.Client().bucket(
+                bucket
+            ).blob(
+                source_records_path.replace(f"gs://{bucket}/", "")
+            ).download_as_text()
+            records = pd.read_csv(StringIO(source_content))
+            # Detect the ID column
+            id_col = "id" if "id" in records.columns else "record_id"
+            if id_col != "record_id":
+                records = records.rename(columns={id_col: "record_id"})
+            records["record_id"] = records["record_id"].astype(str)
+            log.info(f"[Unified] Loaded {len(records)} source records from {source_records_path}")
+        except Exception as e:
+            log.warning(f"[Unified] Could not load source records: {e}. Using node_features.")
+            records = nodes_df.copy()
+    else:
+        records = nodes_df.copy()
+
+    # Drop embedding columns if present
+    emb_cols = [c for c in records.columns if c.startswith("emb_")]
+    if emb_cols:
+        records = records.drop(columns=emb_cols)
 
     unified = records.merge(
         cluster_cols,
@@ -328,10 +350,16 @@ def build_unified_csv(
         how="left",
     )
 
+    # Sort by cluster_id so cluster members are grouped consecutively
+    unified = unified.sort_values(
+        by=["cluster_id", "record_id"],
+        na_position="last",
+    ).reset_index(drop=True)
+
     blob_name = f"processed/{job_suffix}_unified.csv"
     _gcs_upload_csv(unified, bucket, blob_name)
     log.info(
-        f"[Unified] {len(unified)} records → "
+        f"[Unified] {len(unified)} records ({len(unified.columns)} cols) → "
         f"gs://{bucket}/{blob_name}"
     )
     return f"gs://{bucket}/{blob_name}"
@@ -541,8 +569,10 @@ def main():
         write_to_bigquery(entity_clusters_df, cluster_edges_df, cfg)
 
         # 6. Build unified output CSV
+        source_path = SOURCE_GCS_PATH or os.environ.get("RECORDS_GCS_PATH", "")
         unified_path = build_unified_csv(
-            nodes_df, entity_clusters_df, job_suffix, bucket
+            nodes_df, entity_clusters_df, job_suffix, bucket,
+            source_records_path=source_path,
         )
         mlflow.log_param("unified_output", unified_path)
 

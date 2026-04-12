@@ -143,9 +143,10 @@ def run_unify_pipeline(
         except Exception as e:
             log.warning(f"[Job {job_id}] BigQuery write failed (non-fatal): {e}")
 
-        # Build unified CSV
+        # Build unified CSV — pass source records path so original columns are included
         unified_path = build_unified_csv(
-            nodes_df, entity_clusters_df, job_suffix, bucket
+            nodes_df, entity_clusters_df, job_suffix, bucket,
+            source_records_path=records_gcs_path,
         )
         job["unified_gcs_path"] = unified_path
 

@@ -105,6 +105,12 @@ class EntityPair(BaseModel):
     address1: str = Field(..., example="123 Main Street")
     name2: str = Field(..., example="Bob Smith")
     address2: str = Field(..., example="126 Main St")
+    dob1: str = Field("", example="1985-03-15")
+    dob2: str = Field("", example="1985-03-15")
+    email1: str = Field("", example="rsmith@gmail.com")
+    email2: str = Field("", example="bob.smith@gmail.com")
+    phone1: str = Field("", example="617-555-0142")
+    phone2: str = Field("", example="617-555-0142")
 
 
 class BatchRequest(BaseModel):
@@ -124,6 +130,9 @@ class ResolutionResponse(BaseModel):
     field_similarities: dict
     latency_ms: float
     warnings: List[str] = []
+    flag: str = ""
+    deberta_raw: float = 0.0
+    adjustments: List[str] = []
 
 
 class BatchResponse(BaseModel):
@@ -148,6 +157,83 @@ class HealthResponse(BaseModel):
 
 
 # ------------------------------------------------------------------
+# Field-level booster/veto logic
+# ------------------------------------------------------------------
+def _apply_field_rules(deberta_score: float, pair: EntityPair) -> tuple:
+    """
+    Apply field-level boosters and vetoes on top of the DeBERTa score.
+
+    Returns: (adjusted_score, flag, adjustments_list)
+    """
+    import re
+
+    score = deberta_score
+    flag = ""
+    adjustments = []
+
+    def _norm(s: str) -> str:
+        return re.sub(r"[-/\\.\s]", "", s.strip().lower()) if s else ""
+
+    # --- DOB ---
+    dob1, dob2 = _norm(pair.dob1), _norm(pair.dob2)
+    has_dob = bool(dob1) and bool(dob2)
+    if has_dob:
+        if dob1 == dob2:
+            score = min(1.0, score + 0.15)
+            adjustments.append("dob match: +0.15")
+        else:
+            score = min(score, 0.10)
+            adjustments.append("dob mismatch: capped at 0.10")
+
+    # --- Email ---
+    email1, email2 = pair.email1.strip().lower(), pair.email2.strip().lower()
+    has_email = bool(email1) and bool(email2)
+    if has_email:
+        if email1 == email2:
+            if deberta_score < 0.45:
+                flag = "ambiguous"
+                adjustments.append("same email + low DeBERTa: flagged ambiguous")
+            else:
+                score = min(1.0, score + 0.20)
+                adjustments.append("email exact match: +0.20")
+        else:
+            # Check username match (different domain)
+            u1 = email1.split("@")[0] if "@" in email1 else email1
+            u2 = email2.split("@")[0] if "@" in email2 else email2
+            if u1 == u2:
+                score = min(1.0, score + 0.10)
+                adjustments.append("email username match: +0.10")
+
+    # --- Phone ---
+    phone1 = re.sub(r"\D", "", pair.phone1)
+    phone2 = re.sub(r"\D", "", pair.phone2)
+    has_phone = bool(phone1) and bool(phone2)
+    if has_phone and phone1[-9:] == phone2[-9:]:
+        score = min(1.0, score + 0.10)
+        adjustments.append("phone match: +0.10")
+
+    # Recompute decision based on adjusted score
+    if flag == "ambiguous":
+        decision = "REVIEW"
+    elif score >= 0.45:
+        decision = "MATCH"
+    elif score <= 0.20:
+        decision = "NO-MATCH"
+    else:
+        decision = "REVIEW"
+
+    # Confidence level
+    if score >= 0.80:
+        confidence = "HIGH"
+    elif score >= 0.50:
+        confidence = "MEDIUM"
+    else:
+        confidence = "LOW"
+
+    return score, decision, confidence, flag, adjustments
+
+
+# ------------------------------------------------------------------
 # POST /resolve  — single pair
 # ------------------------------------------------------------------
 @app.post("/resolve", response_model=ResolutionResponse)
@@ -155,7 +241,7 @@ async def resolve(pair: EntityPair):
     """
     Resolve a single entity pair.
     Returns match probability, decision (MATCH/NO-MATCH/REVIEW),
-    confidence level, and per-field similarity breakdown.
+    confidence level, per-field similarity breakdown, and field rule adjustments.
     """
     t0 = time.monotonic()
 
@@ -165,7 +251,7 @@ async def resolve(pair: EntityPair):
     # Preprocess
     processed = _preprocessor.prepare_pair(pair.name1, pair.address1, pair.name2, pair.address2)
 
-    # Predict
+    # Predict via DeBERTa
     try:
         results: List[PredictionResult] = _client.predict([processed])
     except Exception as e:
@@ -173,17 +259,24 @@ async def resolve(pair: EntityPair):
         raise HTTPException(status_code=503, detail=f"Model inference failed: {str(e)}")
 
     result = results[0]
+    deberta_raw = result.probability
+
+    # Apply field-level boosters and vetoes
+    adj_score, decision, confidence, flag, adjustments = _apply_field_rules(deberta_raw, pair)
 
     # Update stats
     _update_stats(result, time.monotonic() - t0)
 
     return ResolutionResponse(
-        probability=result.probability,
-        decision=result.decision,
-        confidence_level=result.confidence_level,
+        probability=adj_score,
+        decision=decision,
+        confidence_level=confidence,
         field_similarities=result.field_similarities,
         latency_ms=result.latency_ms,
         warnings=warnings,
+        flag=flag,
+        deberta_raw=deberta_raw,
+        adjustments=adjustments,
     )
 
 
@@ -220,18 +313,23 @@ async def resolve_batch(request: BatchRequest):
 
     for pair, pred in zip(request.pairs, predictions):
         warnings = _preprocessor.validate_pair(pair.name1, pair.address1, pair.name2, pair.address2)
+        deberta_raw = pred.probability
+        adj_score, decision, confidence, flag, adjustments = _apply_field_rules(deberta_raw, pair)
         responses.append(
             ResolutionResponse(
-                probability=pred.probability,
-                decision=pred.decision,
-                confidence_level=pred.confidence_level,
+                probability=adj_score,
+                decision=decision,
+                confidence_level=confidence,
                 field_similarities=pred.field_similarities,
                 latency_ms=pred.latency_ms,
                 warnings=warnings,
+                flag=flag,
+                deberta_raw=deberta_raw,
+                adjustments=adjustments,
             )
         )
-        decision_counts[pred.decision] += 1
-        confidence_counts[pred.confidence_level] += 1
+        decision_counts[decision] += 1
+        confidence_counts[confidence] += 1
         _update_stats(pred, 0)
 
     total = len(predictions)
