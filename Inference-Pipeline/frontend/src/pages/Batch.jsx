@@ -91,7 +91,15 @@ function UnifyPanel() {
         if (!cancelled) setJob(data);
         if (data.status === 'complete' || data.status === 'failed') return;
         if (!cancelled) setTimeout(poll, 2000);
-      } catch {
+      } catch (e) {
+        // 404 means the job was lost (instance scaled down) — clear stale state
+        if (e.response?.status === 404) {
+          if (!cancelled) {
+            setJobId(null); setJob(null);
+            localStorage.removeItem('unify_job_id');
+          }
+          return;
+        }
         if (!cancelled) setTimeout(poll, 3000);
       }
     };
