@@ -433,12 +433,38 @@ export default function Batch() {
   /* -- Run batch ------------------------------------------ */
   const run = async () => {
     setLoading(true); setResults(null); setProgress(0); setError(null);
-    const pairs = mode === 'sample' ? SAMPLE : csvData.map(row => ({
-      name1: row[columnMap.name1] || '',
-      address1: row[columnMap.address1] || '',
-      name2: row[columnMap.name2] || '',
-      address2: row[columnMap.address2] || '',
-    }));
+
+    let pairs;
+    if (mode === 'sample') {
+      pairs = SAMPLE;
+    } else {
+      // Auto-detect columns from CSV headers (case-insensitive)
+      const findCol = (...candidates) => {
+        for (const c of candidates) {
+          const found = csvHeaders.find(h => h.toLowerCase() === c.toLowerCase());
+          if (found) return found;
+        }
+        return null;
+      };
+      const n1 = findCol('name1', 'name');
+      const a1 = findCol('address1', 'address');
+      const n2 = findCol('name2');
+      const a2 = findCol('address2');
+      const d1 = findCol('dob1', 'dob');
+      const d2 = findCol('dob2');
+      const e1 = findCol('email1', 'email');
+      const e2 = findCol('email2');
+      const p1 = findCol('phone1', 'phone');
+      const p2 = findCol('phone2');
+
+      pairs = csvData.map(row => ({
+        name1: row[n1] || '', address1: row[a1] || '',
+        name2: row[n2] || '', address2: row[a2] || '',
+        dob1: row[d1] || '', dob2: row[d2] || '',
+        email1: row[e1] || '', email2: row[e2] || '',
+        phone1: row[p1] || '', phone2: row[p2] || '',
+      }));
+    }
 
     const out = [];
     for (let i = 0; i < pairs.length; i++) {
@@ -458,7 +484,7 @@ export default function Batch() {
     'NO-MATCH': results.filter(r => r.decision === 'NO-MATCH').length,
   } : {};
 
-  const canRun = mode === 'sample' || (csvData && columnMap.name1 && columnMap.name2);
+  const canRun = mode === 'sample' || (csvData && csvData.length > 0);
   const mappedCount = Object.keys(columnMap).length;
 
   return (
@@ -497,17 +523,6 @@ export default function Batch() {
           Sample data
         </button>
         <button
-          onClick={() => { setMode('csv'); setResults(null); }}
-          className={`flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-medium transition-colors ${
-            mode === 'csv'
-              ? 'bg-[var(--accent-dim)] text-[var(--accent)] border border-[var(--border-accent)]'
-              : 'bg-black/[0.02] text-[var(--text-muted)] border border-black/[0.06] hover:bg-[var(--bg-hover)]'
-          }`}
-        >
-          <Upload size={16} aria-hidden="true" />
-          Upload CSV
-        </button>
-        <button
           onClick={() => { setMode('unify'); setResults(null); }}
           className={`flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-medium transition-colors ${
             mode === 'unify'
@@ -519,128 +534,6 @@ export default function Batch() {
           Unify records
         </button>
       </motion.div>
-
-      {/* CSV upload + column mapping */}
-      <AnimatePresence mode="wait">
-        {mode === 'csv' && (
-          <motion.div
-            key="csv"
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -12 }}
-            transition={spring}
-            className="space-y-5"
-          >
-            {/* Upload zone */}
-            {!csvData ? (
-              <div
-                role="button"
-                tabIndex={0}
-                aria-label="Upload CSV file"
-                onClick={() => fileRef.current?.click()}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileRef.current?.click(); } }}
-                className="glass-card flex cursor-pointer flex-col items-center justify-center border-dashed py-20 transition-colors hover:border-[var(--border-accent)] hover:bg-[var(--bg-hover)]"
-              >
-                <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--accent-dim)] mb-4">
-                  <Upload size={24} className="text-[var(--accent)]" aria-hidden="true" />
-                </div>
-                <p className="text-sm font-medium text-[var(--text-secondary)]">Click to upload CSV</p>
-                <p className="mt-1.5 text-xs text-[var(--text-muted)]">
-                  Columns will be auto-detected when possible
-                </p>
-                <input ref={fileRef} type="file" accept=".csv" onChange={handleFile} className="hidden" />
-              </div>
-            ) : (
-              <>
-                {/* File info */}
-                <div className="glass-card flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-50 border border-emerald-100">
-                      <FileSpreadsheet size={20} className="text-emerald-600" aria-hidden="true" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-[var(--text-primary)]">
-                        {fileName || `${csvData.length} rows`}
-                      </p>
-                      <p className="text-xs text-[var(--text-muted)]">
-                        {csvData.length} rows, {csvHeaders.length} columns detected
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => { setCsvData(null); setCsvHeaders([]); setColumnMap({}); setFileName(''); }}
-                    className="btn-secondary text-xs"
-                  >
-                    Clear
-                  </button>
-                </div>
-
-                {/* Column mapping */}
-                <div className="glass-card">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="section-label">Column mapping</h3>
-                    <span className="text-xs text-[var(--text-faint)]">
-                      {mappedCount} of {TARGET_FIELDS.length} mapped
-                    </span>
-                  </div>
-                  <p className="mb-5 text-xs text-[var(--text-muted)]">
-                    Map your CSV columns to the required entity fields. Name columns are required.
-                  </p>
-                  <div className="space-y-2.5">
-                    {TARGET_FIELDS.map((field, idx) => {
-                      const required = field === 'name1' || field === 'name2';
-                      const mapped = columnMap[field];
-                      return (
-                        <motion.div
-                          key={field}
-                          initial={{ opacity: 0, x: -8 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          transition={{ delay: idx * STAGGER_MS, ...spring }}
-                          className={`flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-colors ${
-                            mapped
-                              ? 'border-emerald-200/60 bg-emerald-50/30'
-                              : 'border-black/[0.04] bg-white/50'
-                          }`}
-                        >
-                          <GripVertical size={14} className="text-[var(--text-faint)] shrink-0" aria-hidden="true" />
-                          <div className="w-40 shrink-0">
-                            <p className="text-xs font-medium text-[var(--text-secondary)]">
-                              {FIELD_LABELS[field]}
-                              {required && <span className="text-red-600 ml-1">*</span>}
-                            </p>
-                          </div>
-                          <ArrowRight size={14} className="text-[var(--text-faint)] shrink-0" aria-hidden="true" />
-                          <select
-                            value={mapped || ''}
-                            onChange={e => handleMapColumn(field, e.target.value)}
-                            className="input-field flex-1 text-xs py-1.5"
-                            {...(required ? { 'aria-required': 'true' } : {})}
-                          >
-                            <option value="">-- not mapped --</option>
-                            {csvHeaders.map(h => (
-                              <option key={h} value={h}>{h}</option>
-                            ))}
-                          </select>
-                          {mapped && (
-                            <motion.div
-                              initial={{ scale: 0 }}
-                              animate={{ scale: 1 }}
-                              transition={{ type: 'spring', stiffness: 300, damping: 20 }}
-                              className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-100"
-                            >
-                              <Check size={11} className="text-emerald-600" aria-hidden="true" />
-                            </motion.div>
-                          )}
-                        </motion.div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </>
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* Unify mode */}
       <AnimatePresence mode="wait">
