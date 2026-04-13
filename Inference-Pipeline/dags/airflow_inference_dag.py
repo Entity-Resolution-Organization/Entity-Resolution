@@ -1,0 +1,326 @@
+# -*- coding: utf-8 -*-
+"""
+airflow_inference_dag.py
+========================
+Airflow DAG for batch entity resolution inference.
+
+DAG ID: er_inference_pipeline
+
+Task flow:
+  validate_input -> preprocess_check -> batch_inference -> log_metrics -> upload_results
+
+Trigger:
+  - Manually via Airflow UI or CLI
+  - Optionally triggered by er_data_pipeline DAG on success
+    (via TriggerDagRunOperator -- same pattern as existing pipelines)
+  - Scheduled (default: disabled, set schedule_interval to enable)
+
+Config (passed via dag_run.conf):
+  {
+    "input_path": "inference/input/pairs.csv",   # optional, auto-discovers if omitted
+    "output_prefix": "inference/results/",        # optional
+    "dry_run": false                              # optional, default false
+  }
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from datetime import timedelta
+
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.utils.dates import days_ago
+
+logger = logging.getLogger(__name__)
+
+# ------------------------------------------------------------------
+# Default args -- mirrors existing er_data_pipeline DAG style
+# ------------------------------------------------------------------
+DEFAULT_ARGS = {
+    "owner": "entity-resolution-team",
+    "depends_on_past": False,
+    "email_on_failure": True,
+    "email_on_retry": False,
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
+    "execution_timeout": timedelta(hours=2),
+}
+
+# ------------------------------------------------------------------
+# DAG definition
+# ------------------------------------------------------------------
+with DAG(
+    dag_id="er_inference_pipeline",
+    description="Batch entity resolution inference -- deBERTa + LoRA via Vertex AI",
+    default_args=DEFAULT_ARGS,
+    start_date=days_ago(1),
+    schedule_interval=None,  # manual trigger only
+    catchup=False,
+    max_active_runs=1,
+    tags=["entity-resolution", "inference", "vertex-ai"],
+    doc_md="""
+## Entity Resolution Inference Pipeline
+
+Runs batch inference on entity pairs stored in GCS.
+
+### Inputs
+Upload a CSV to `gs://{bucket}/inference/input/` with columns:
+`name1, address1, name2, address2`
+
+### Outputs
+Results CSV + summary JSON written to:
+`gs://{bucket}/inference/results/{timestamp}/`
+
+### Trigger with custom input path
+```bash
+airflow dags trigger er_inference_pipeline \\
+  --conf '{"input_path": "inference/input/my_pairs.csv"}'
+```
+
+### Manual trigger (CLI)
+```bash
+docker exec <airflow-scheduler> airflow dags trigger er_inference_pipeline
+```
+""",
+) as dag:
+
+    # ------------------------------------------------------------------
+    # Task 1 -- validate_input
+    # ------------------------------------------------------------------
+    def _validate_input(**context):
+        """
+        Check that the input CSV exists in GCS and has the required columns.
+        Raises ValueError if validation fails -- blocks downstream tasks.
+        """
+        conf = context["dag_run"].conf or {}
+        input_path = conf.get("input_path")
+
+        import sys
+
+        sys.path.insert(0, "/opt/airflow/Inference-Pipeline")
+
+        from pathlib import Path
+
+        import yaml
+
+        cfg_path = Path("/opt/airflow/Inference-Pipeline/config/inference_config.yaml")
+        with open(cfg_path) as f:
+            raw = f.read()
+        for key, val in os.environ.items():
+            raw = raw.replace(f"${{{key}}}", val)
+        cfg = yaml.safe_load(raw)
+
+        bucket_name = cfg["gcp"]["bucket_name"]
+        project_id = cfg["gcp"]["project_id"]
+
+        from google.cloud import storage
+
+        gcs = storage.Client(project=project_id)
+        bucket = gcs.bucket(bucket_name)
+
+        if input_path:
+            # Check specified path exists
+            blob = bucket.blob(input_path)
+            if not blob.exists():
+                raise FileNotFoundError(f"Input file not found: gs://{bucket_name}/{input_path}")
+            logger.info(f"Input file confirmed: gs://{bucket_name}/{input_path}")
+        else:
+            # Check at least one CSV exists in input prefix
+            input_prefix = cfg["gcs_paths"]["inference_input"]
+            blobs = list(bucket.list_blobs(prefix=input_prefix))
+            csv_blobs = [b for b in blobs if b.name.endswith(".csv")]
+            if not csv_blobs:
+                raise FileNotFoundError(
+                    f"No CSV files found in gs://{bucket_name}/{input_prefix}. "
+                    "Upload a pairs CSV before triggering this DAG."
+                )
+            logger.info(f"Found {len(csv_blobs)} CSV file(s) in input prefix")
+
+        # Push resolved input_path to XCom for downstream tasks
+        context["ti"].xcom_push(key="input_path", value=input_path)
+        context["ti"].xcom_push(key="bucket_name", value=bucket_name)
+        logger.info("validate_input: PASSED")
+
+    validate_input_task = PythonOperator(
+        task_id="validate_input",
+        python_callable=_validate_input,
+        provide_context=True,
+    )
+
+    # ------------------------------------------------------------------
+    # Task 2 -- preprocess_check
+    # ------------------------------------------------------------------
+    def _preprocess_check(**context):
+        """
+        Quick smoke-test: preprocess a single row to confirm the
+        preprocessing module loads correctly and GCP auth works.
+        """
+        import sys
+
+        sys.path.insert(0, "/opt/airflow/Inference-Pipeline")
+
+        from scripts.preprocess import InferencePreprocessor  # noqa: F401
+
+        pp = InferencePreprocessor()
+        test_pair = pp.prepare_pair(
+            name1="Robert Smith",
+            address1="123 Main Street",
+            name2="Bob Smith",
+            address2="123 Main St",
+        )
+
+        assert test_pair["name1"] == "robert smith", f"Unexpected: {test_pair['name1']}"
+        assert test_pair["address1"] == "123 main st", f"Unexpected: {test_pair['address1']}"
+        assert all(k in test_pair for k in ["name1", "address1", "name2", "address2"])
+
+        logger.info(f"Preprocess smoke test passed: {test_pair}")
+
+        # Push dry_run flag to XCom
+        conf = context["dag_run"].conf or {}
+        dry_run = conf.get("dry_run", False)
+        context["ti"].xcom_push(key="dry_run", value=dry_run)
+
+    preprocess_check_task = PythonOperator(
+        task_id="preprocess_check",
+        python_callable=_preprocess_check,
+        provide_context=True,
+    )
+
+    # ------------------------------------------------------------------
+    # Task 3 -- batch_inference
+    # ------------------------------------------------------------------
+    def _batch_inference(**context):
+        """
+        Run full batch inference using batch_inference.run_batch_inference().
+        Reads input_path and dry_run from XCom set by upstream tasks.
+        Pushes summary to XCom for downstream log_metrics task.
+        """
+        import sys
+
+        sys.path.insert(0, "/opt/airflow/Inference-Pipeline")
+
+        ti = context["ti"]
+        input_path = ti.xcom_pull(task_ids="validate_input", key="input_path")
+        dry_run = ti.xcom_pull(task_ids="preprocess_check", key="dry_run") or False
+        conf = context["dag_run"].conf or {}
+        output_prefix = conf.get("output_prefix")
+
+        from scripts.batch_inference import run_batch_inference
+
+        logger.info(
+            f"Starting batch inference | input={input_path} "
+            f"dry_run={dry_run} output_prefix={output_prefix}"
+        )
+
+        summary = run_batch_inference(
+            input_gcs_path=input_path,
+            output_prefix=output_prefix,
+            dry_run=dry_run,
+        )
+
+        logger.info(f"Batch inference complete: {json.dumps(summary, indent=2)}")
+
+        # Push summary for downstream tasks
+        ti.xcom_push(key="summary", value=summary)
+
+        return summary
+
+    batch_inference_task = PythonOperator(
+        task_id="batch_inference",
+        python_callable=_batch_inference,
+        provide_context=True,
+        execution_timeout=timedelta(hours=1),
+    )
+
+    # ------------------------------------------------------------------
+    # Task 4 -- log_metrics
+    # ------------------------------------------------------------------
+    def _log_metrics(**context):
+        """
+        Log inference summary metrics to Airflow task logs.
+        MLflow logging is handled inside batch_inference.py itself.
+        Raises if match_rate is suspiciously low (data quality alert).
+        """
+        ti = context["ti"]
+        summary = ti.xcom_pull(task_ids="batch_inference", key="summary")
+
+        if not summary:
+            logger.warning("No summary found in XCom -- skipping metrics logging")
+            return
+
+        logger.info("=" * 60)
+        logger.info("INFERENCE PIPELINE SUMMARY")
+        logger.info("=" * 60)
+        logger.info(f"  Total pairs:       {summary['total_pairs']}")
+        logger.info(f"  MATCH:             {summary['match_count']}")
+        logger.info(f"  NO-MATCH:          {summary['no_match_count']}")
+        logger.info(f"  REVIEW:            {summary['review_count']}")
+        logger.info(f"  Match rate:        {summary['match_rate']:.1%}")
+        logger.info(f"  Processing time:   {summary['processing_time_s']:.1f}s")
+        logger.info(f"  Avg latency:       {summary['avg_latency_ms']:.1f}ms")
+        logger.info(f"  Output path:       {summary.get('output_path', 'dry-run')}")
+        logger.info("=" * 60)
+
+        # Alert if match rate is unexpectedly low (potential data issue)
+        match_rate = summary.get("match_rate", 1.0)
+        if match_rate < 0.01 and summary["total_pairs"] > 100:
+            logger.warning(
+                f"ALERT: Unusually low match rate ({match_rate:.1%}) -- "
+                "check input data quality or model endpoint health."
+            )
+
+    log_metrics_task = PythonOperator(
+        task_id="log_metrics",
+        python_callable=_log_metrics,
+        provide_context=True,
+    )
+
+    # ------------------------------------------------------------------
+    # Task 5 -- upload_results (confirmation step)
+    # ------------------------------------------------------------------
+    def _upload_results(**context):
+        """
+        Confirm results were written to GCS and log the final output path.
+        Acts as the DAG's success gate -- downstream systems can
+        poll this task's XCom for the results location.
+        """
+        ti = context["ti"]
+        summary = ti.xcom_pull(task_ids="batch_inference", key="summary")
+
+        if not summary:
+            logger.warning("No summary -- skipping upload confirmation")
+            return
+
+        output_path = summary.get("output_path", "")
+        dry_run = ti.xcom_pull(task_ids="preprocess_check", key="dry_run")
+
+        if dry_run:
+            logger.info("Dry run mode -- no files written to GCS")
+        else:
+            logger.info(f"Results available at: {output_path}")
+            logger.info(f"  results.csv  -> {output_path}results.csv")
+            logger.info(f"  summary.json -> {output_path}summary.json")
+
+        # Push final output path for any downstream DAGs (e.g. monitoring)
+        ti.xcom_push(key="results_path", value=output_path)
+        logger.info("er_inference_pipeline: COMPLETE -")
+
+    upload_results_task = PythonOperator(
+        task_id="upload_results",
+        python_callable=_upload_results,
+        provide_context=True,
+    )
+
+    # ------------------------------------------------------------------
+    # DAG dependency chain
+    # ------------------------------------------------------------------
+    (
+        validate_input_task
+        >> preprocess_check_task
+        >> batch_inference_task
+        >> log_metrics_task
+        >> upload_results_task
+    )

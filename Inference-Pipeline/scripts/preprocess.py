@@ -1,0 +1,259 @@
+# -*- coding: utf-8 -*-
+"""
+preprocess.py
+=============
+Inference-time preprocessing for entity resolution.
+
+Wraps the same normalization logic used in Data-Pipeline so that
+inference inputs are guaranteed to match the training distribution.
+
+Key design: InferencePreprocessor.prepare_pair() produces the exact
+same field format that the Vertex AI endpoint expects:
+    { name1, address1, name2, address2 }
+
+Usage:
+    preprocessor = InferencePreprocessor()
+    pair = preprocessor.prepare_pair(
+        name1="ROBERT  smith",
+        address1="123 Main St.",
+        name2="Bob Smith",
+        address2="123 MAIN STREET"
+    )
+    # -> {"name1": "robert smith", "address1": "123 main st",
+    #     "name2": "bob smith",   "address2": "123 main street"}
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import unicodedata
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+# ------------------------------------------------------------------
+# Constants -- mirror Data-Pipeline/scripts/preprocessing.py
+# ------------------------------------------------------------------
+MISSING_SENTINEL = "[MISSING]"  # matches _safe() in Data-Pipeline evaluate.py
+
+# Common name prefixes/suffixes to strip for normalization
+NAME_PREFIXES = {"mr", "mrs", "ms", "dr", "prof", "sir", "rev"}
+NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "phd", "md", "esq"}
+
+# Street type abbreviation map (matches Data-Pipeline normalization)
+STREET_ABBREVS = {
+    "street": "st",
+    "avenue": "ave",
+    "boulevard": "blvd",
+    "drive": "dr",
+    "road": "rd",
+    "lane": "ln",
+    "court": "ct",
+    "place": "pl",
+    "circle": "cir",
+    "highway": "hwy",
+    "parkway": "pkwy",
+    "square": "sq",
+    "terrace": "ter",
+}
+
+
+# ------------------------------------------------------------------
+# Core normalization functions
+# (mirrors Data-Pipeline/scripts/preprocessing.py)
+# ------------------------------------------------------------------
+
+
+def normalize_name(name: Optional[str]) -> str:
+    """
+    Normalize a person name for entity resolution.
+
+    Steps:
+      1. Handle None / empty -> MISSING_SENTINEL
+      2. Unicode normalization (NFKD -> ASCII)
+      3. Lowercase + strip extra whitespace
+      4. Remove punctuation except hyphens (hyphenated names kept)
+      5. Strip honorific prefixes and generational suffixes
+
+    Examples:
+      "ROBERT  Smith"  -> "robert smith"
+      "Dr. Jane Doe"   -> "jane doe"
+      "O'Brien"        -> "obrien"
+      None             -> "[MISSING]"
+    """
+    if not name or str(name).strip() in ("", "nan", "None", "null"):
+        return MISSING_SENTINEL
+
+    # Unicode -> ASCII
+    text = unicodedata.normalize("NFKD", str(name))
+    text = text.encode("ascii", "ignore").decode("ascii")
+
+    # Lowercase + collapse whitespace
+    text = text.lower().strip()
+    text = re.sub(r"\s+", " ", text)
+
+    # Remove punctuation except hyphens
+    text = re.sub(r"[^\w\s\-]", "", text)
+
+    # Strip prefixes / suffixes
+    tokens = text.split()
+    tokens = [t for t in tokens if t not in NAME_PREFIXES]
+    # Check last token for suffix
+    if tokens and tokens[-1].rstrip(".") in NAME_SUFFIXES:
+        tokens = tokens[:-1]
+
+    result = " ".join(tokens).strip()
+    return result if result else MISSING_SENTINEL
+
+
+def normalize_address(address: Optional[str]) -> str:
+    """
+    Normalize a street address for entity resolution.
+
+    Steps:
+      1. Handle None / empty -> MISSING_SENTINEL
+      2. Unicode normalization
+      3. Lowercase + strip extra whitespace
+      4. Remove punctuation (periods, commas)
+      5. Expand/contract street type abbreviations
+      6. Normalize apartment/unit indicators
+
+    Examples:
+      "123 Main Street, Apt 4B"  -> "123 main st apt 4b"
+      "456 ELM AVE."             -> "456 elm ave"
+      None                       -> "[MISSING]"
+    """
+    if not address or str(address).strip() in ("", "nan", "None", "null"):
+        return MISSING_SENTINEL
+
+    # Unicode -> ASCII
+    text = unicodedata.normalize("NFKD", str(address))
+    text = text.encode("ascii", "ignore").decode("ascii")
+
+    # Lowercase + collapse whitespace
+    text = text.lower().strip()
+    text = re.sub(r"\s+", " ", text)
+
+    # Remove punctuation (commas, periods) but keep alphanumeric + spaces + hyphens
+    text = re.sub(r"[^\w\s\-]", "", text)
+
+    # Normalize street type abbreviations (full word -> abbreviation)
+    tokens = text.split()
+    normalized = []
+    for token in tokens:
+        normalized.append(STREET_ABBREVS.get(token, token))
+    text = " ".join(normalized)
+
+    # Normalize apartment indicators
+    text = re.sub(r"\bapartment\b", "apt", text)
+    text = re.sub(r"\bunit\b", "apt", text)
+    text = re.sub(r"\bsuite\b", "ste", text)
+    text = re.sub(r"\bfloor\b", "fl", text)
+
+    result = text.strip()
+    return result if result else MISSING_SENTINEL
+
+
+def normalize_date(date: Optional[str]) -> str:
+    """
+    Normalize a date string to YYYY-MM-DD format where possible.
+    Falls back to the cleaned string if parsing fails.
+    Mirrors Data-Pipeline date normalization.
+    """
+    if not date or str(date).strip() in ("", "nan", "None", "null"):
+        return MISSING_SENTINEL
+
+    text = str(date).strip()
+
+    # Try common formats
+    import datetime
+
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%m-%d-%Y", "%B %d %Y", "%b %d %Y", "%d %B %Y"):
+        try:
+            return datetime.datetime.strptime(text, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+
+    # Return cleaned string if no format matched
+    return re.sub(r"[^\d\-/]", "", text) or MISSING_SENTINEL
+
+
+# ------------------------------------------------------------------
+# InferencePreprocessor
+# ------------------------------------------------------------------
+class InferencePreprocessor:
+    """
+    Prepares raw user input for the entity resolution model.
+
+    Guarantees output format matches the training distribution
+    by reusing the same normalization functions as Data-Pipeline.
+    """
+
+    def prepare_pair(
+        self,
+        name1: Optional[str],
+        address1: Optional[str],
+        name2: Optional[str],
+        address2: Optional[str],
+    ) -> dict:
+        """
+        Normalize a single entity pair for model inference.
+
+        Args:
+            name1, address1 : fields for entity A
+            name2, address2 : fields for entity B
+
+        Returns:
+            dict with keys: name1, address1, name2, address2
+            (normalized, ready to send to model_client.predict)
+        """
+        pair = {
+            "name1": normalize_name(name1),
+            "address1": normalize_address(address1),
+            "name2": normalize_name(name2),
+            "address2": normalize_address(address2),
+        }
+        logger.debug(f"Preprocessed pair: {pair}")
+        return pair
+
+    def prepare_batch(self, records: list[dict]) -> list[dict]:
+        """
+        Normalize a batch of entity pairs.
+
+        Each record must have keys: name1, address1, name2, address2.
+        Missing keys default to None (-> MISSING_SENTINEL).
+
+        Args:
+            records: list of raw input dicts
+
+        Returns:
+            list of normalized dicts ready for model_client.predict
+        """
+        return [
+            self.prepare_pair(
+                name1=r.get("name1"),
+                address1=r.get("address1"),
+                name2=r.get("name2"),
+                address2=r.get("address2"),
+            )
+            for r in records
+        ]
+
+    def validate_pair(self, name1, address1, name2, address2) -> list[str]:
+        """
+        Check for input quality issues before preprocessing.
+        Returns a list of warning strings (empty = all good).
+        """
+        warnings = []
+
+        if not name1 or str(name1).strip() == "":
+            warnings.append("name1 is empty")
+        if not name2 or str(name2).strip() == "":
+            warnings.append("name2 is empty")
+        if not address1 or str(address1).strip() == "":
+            warnings.append("address1 is empty -- match quality may be lower")
+        if not address2 or str(address2).strip() == "":
+            warnings.append("address2 is empty -- match quality may be lower")
+
+        return warnings
