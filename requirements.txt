@@ -1,4 +1,0 @@
-
-# Monitoring
-evidently>=0.5.0
-scipy>=1.10.0

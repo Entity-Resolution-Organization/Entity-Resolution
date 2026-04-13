@@ -434,9 +434,6 @@ COPY config/ ./config/
 ENV MODEL_DIR=/app/model_weights
 ENV CONFIG_PATH=/app/config/training_config.yaml
 ENV ENTITY_TYPE={entity_type}
-ENV GCP_PROJECT_ID={gcp["project_id"]}
-ENV BQ_DATASET=entity_resolution
-ENV ENABLE_PREDICTION_LOG=true
 EXPOSE 8080
 ENV PYTHONPATH=/app
 CMD ["uvicorn", "scripts.serve:app", "--host", "0.0.0.0", "--port", "8080"]
@@ -600,9 +597,6 @@ def register_model_op(image_uri: str, gcs_bucket: str) -> str:
                 "CLASSIFICATION_THRESHOLD": str(
                     config["validation"]["classification_threshold"]
                 ),
-                "GCP_PROJECT_ID": gcp["project_id"],
-                "BQ_DATASET": "entity_resolution",
-                "ENABLE_PREDICTION_LOG": "true",
             },
             labels={
                 "entity_type": entity_type,
@@ -736,62 +730,21 @@ def deploy_to_endpoint_op(
 
 
 @component(base_image=TRAINER_IMAGE)
-@component(base_image=TRAINER_IMAGE)
-def alert_op(reason: str, mlflow_tracking_uri: str, gcs_bucket: str = "") -> None:
-    """Send rich Slack notification with metrics."""
+def alert_op(reason: str, mlflow_tracking_uri: str) -> None:
     import json
     import urllib.request
 
     import yaml
-    from google.cloud import storage
 
     with open("/app/config/training_config.yaml") as f:
         config = yaml.safe_load(f)
 
-    # Read model metrics from GCS
-    metrics_info = ""
-    if gcs_bucket:
-        try:
-            client = storage.Client()
-            for entity_type in config["data"]["entity_types"]:
-                blob = client.bucket(gcs_bucket).blob(
-                    f"pipeline-results/models/{entity_type}/results/test_metrics.json"
-                )
-                metrics = json.loads(blob.download_as_text())
-                metrics_info += (
-                    f"\n*{entity_type} metrics:*"
-                    f"\n  F1: {metrics.get('test_f1', 'N/A'):.4f}"
-                    f"\n  Precision: {metrics.get('test_precision', 'N/A'):.4f}"
-                    f"\n  Recall: {metrics.get('test_recall', 'N/A'):.4f}"
-                    f"\n  AUC: {metrics.get('test_auc', 'N/A'):.4f}"
-                )
-        except Exception as e:
-            metrics_info = f"\n(Could not load metrics: {e})"
-
-    # Read endpoint info for deploy alerts
-    endpoint_info = ""
-    if gcs_bucket and "deployed" in reason.lower():
-        try:
-            blob = client.bucket(gcs_bucket).blob("pipeline-results/endpoint_info.json")
-            ep = json.loads(blob.download_as_text())
-            endpoint_info = f"\nEndpoint: {ep.get('predict_url', 'N/A')}"
-        except Exception:
-            pass
-
-    # Read registry info for version
-    version_info = ""
-    if gcs_bucket and "deployed" in reason.lower():
-        try:
-            for entity_type in config["data"]["entity_types"]:
-                blob = client.bucket(gcs_bucket).blob(
-                    f"pipeline-results/{entity_type}/registry_log.json"
-                )
-                reg = json.loads(blob.download_as_text())
-                version_info += f"\nModel version: {reg.get('version', 'N/A')}"
-        except Exception:
-            pass
-
-    msg = f"[ER Pipeline] {reason}{metrics_info}{version_info}{endpoint_info}"
+    msg = (
+        f"[ER Pipeline] {reason}\n"
+        f"MLflow:    {mlflow_tracking_uri}\n"
+        f"Vertex AI: https://console.cloud.google.com/vertex-ai/pipelines"
+        f"?project={config['gcp']['project_id']}"
+    )
     print(msg)
 
     notif = config.get("notifications", {})
@@ -905,14 +858,12 @@ def er_model_pipeline(
         alert_op(
             reason="Rollback triggered — F1 degradation exceeded threshold.",
             mlflow_tracking_uri=mlflow_tracking_uri,
-            gcs_bucket=gcs_bucket,
         ).set_display_name("alert_rollback").after(rollback_task)
 
     with dsl.If(combined_task.output == "NO-GO", name="if-no-go"):
         alert_op(
             reason="Quality gate NO-GO — one or more metrics below threshold.",
             mlflow_tracking_uri=mlflow_tracking_uri,
-            gcs_bucket=gcs_bucket,
         ).set_display_name("alert_quality_gate")
 
     with dsl.If(combined_task.output == "GO", name="if-push"):
@@ -926,19 +877,13 @@ def er_model_pipeline(
             gcs_bucket=gcs_bucket,
         ).set_display_name("register_model")
 
-        deploy_task = deploy_to_endpoint_op(
+        deploy_to_endpoint_op(
             model_resource_name=register_task.output,
             gcs_bucket=gcs_bucket,
             machine_type=deploy_machine_type,
             min_replica_count=min_replicas,
             max_replica_count=max_replicas,
         ).set_display_name("deploy_to_endpoint")
-
-        alert_op(
-            reason="✅ New model deployed successfully.",
-            mlflow_tracking_uri=mlflow_tracking_uri,
-            gcs_bucket=gcs_bucket,
-        ).set_display_name("alert_deployed").after(deploy_task)
 
 
 # =============================================================================
