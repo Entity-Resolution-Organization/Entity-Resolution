@@ -12,6 +12,10 @@ export default defineConfig({
       '/health': 'http://localhost:8000',
       '/metrics': 'http://localhost:8000',
       '/unify': 'http://localhost:8000',
+      '/360': 'http://localhost:8000',
+      '/kyc': 'http://localhost:8000',
+      '/fraud': 'http://localhost:8000',
+      '/clusters': 'http://localhost:8000',
     },
   },
 })

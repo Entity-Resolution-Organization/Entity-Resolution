@@ -2,8 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Home, GitCompare, LayoutGrid, Share2, Upload, BarChart3, Activity, Shield,
-  Fingerprint, Menu, X, GitMerge, User, ShieldAlert, Eye, TrendingUp,
+  Home, GitCompare, Upload, Shield, Fingerprint,
+  Menu, X, GitMerge, User, Eye, TrendingUp,
 } from 'lucide-react';
 import { springSnappy } from '../motion';
 
@@ -11,12 +11,11 @@ const NAV_ITEMS = [
   { to: '/',             icon: Home,        label: 'Home' },
   { to: '/match',        icon: GitCompare,  label: 'Match' },
   { to: '/batch',        icon: Upload,      label: 'Batch' },
-  { to: '/clusters',     icon: GitMerge,    label: 'Clusters' },
   { to: '/customer360',  icon: User,        label: '360' },
   { to: '/kyc',          icon: Eye,         label: 'KYC' },
   { to: '/fraud',        icon: Shield,      label: 'Fraud' },
   { to: '/analytics',    icon: TrendingUp,  label: 'Analytics' },
-  { to: '/pipeline',     icon: BarChart3,   label: 'Pipeline' },
+  { to: '/clusters',     icon: GitMerge,    label: 'Clusters' },
 ];
 
 export default function Layout() {

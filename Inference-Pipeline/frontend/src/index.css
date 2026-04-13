@@ -345,7 +345,8 @@ body {
   background: var(--bg-elevated);
 }
 .input-field::placeholder {
-  color: var(--text-faint);
+  color: #a8a29e;
+  opacity: 1;
 }
 
 select.input-field {

@@ -14,7 +14,6 @@ const Customer360 = lazy(() => import('./pages/Customer360'));
 const KYC = lazy(() => import('./pages/KYC'));
 const Fraud = lazy(() => import('./pages/Fraud'));
 const Analytics = lazy(() => import('./pages/Analytics'));
-const Pipeline = lazy(() => import('./pages/Pipeline'));
 const Monitor = lazy(() => import('./pages/Monitor'));
 const NotFound = lazy(() => import('./pages/NotFound'));
 
@@ -37,7 +36,6 @@ export default function App() {
                 <Route path="kyc" element={<KYC />} />
                 <Route path="fraud" element={<Fraud />} />
                 <Route path="analytics" element={<Analytics />} />
-                <Route path="pipeline" element={<Pipeline />} />
                 <Route path="monitor" element={<Monitor />} />
                 <Route path="*" element={<NotFound />} />
               </Route>

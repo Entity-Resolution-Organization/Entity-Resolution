@@ -101,6 +101,15 @@ async def startup():
     _client = get_client()
     logger.info("Model client ready.")
 
+    # Pre-cache demo data for interactive pages (360, KYC, Fraud, Clusters)
+    try:
+        from scripts.demo_cache import load_demo_data
+        bucket = CFG.get("gcp", {}).get("bucket_name", "")
+        if bucket:
+            load_demo_data(bucket)
+    except Exception as e:
+        logger.warning(f"Demo cache load failed (non-fatal): {e}")
+
 
 # ------------------------------------------------------------------
 # Pydantic schemas
@@ -743,6 +752,79 @@ async def unify_jobs():
             for j in job_store.values()
         ]
     }
+
+
+# ------------------------------------------------------------------
+# Customer 360 endpoints
+# ------------------------------------------------------------------
+@app.get("/360/search")
+async def search_360(name: str = "", limit: int = 10):
+    """Search entities by name, returns matching clusters."""
+    from scripts.demo_cache import is_loaded, search_entities
+    if not is_loaded():
+        raise HTTPException(status_code=503, detail="Demo data not loaded yet")
+    results = search_entities(name, limit)
+    return {"results": results, "query": name}
+
+
+@app.get("/360/cluster/{cluster_id}")
+async def cluster_profile(cluster_id: str):
+    """Full cluster profile: golden record + source records + edges."""
+    from scripts.demo_cache import is_loaded, get_cluster_profile
+    if not is_loaded():
+        raise HTTPException(status_code=503, detail="Demo data not loaded yet")
+    profile = get_cluster_profile(cluster_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+    return profile
+
+
+# ------------------------------------------------------------------
+# KYC endpoints
+# ------------------------------------------------------------------
+@app.get("/kyc/alerts")
+async def kyc_alerts():
+    """List KYC risk alerts (OFAC linkages)."""
+    from scripts.demo_cache import is_loaded, get_kyc_alerts
+    if not is_loaded():
+        raise HTTPException(status_code=503, detail="Demo data not loaded yet")
+    return {"alerts": get_kyc_alerts()}
+
+
+@app.get("/kyc/investigate/{record_id}")
+async def kyc_investigate(record_id: str):
+    """2-hop investigation graph for a flagged entity."""
+    from scripts.demo_cache import is_loaded, get_kyc_investigation
+    if not is_loaded():
+        raise HTTPException(status_code=503, detail="Demo data not loaded yet")
+    result = get_kyc_investigation(record_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="No KYC alert for this record")
+    return result
+
+
+# ------------------------------------------------------------------
+# Fraud detection endpoints
+# ------------------------------------------------------------------
+@app.get("/fraud/rings")
+async def fraud_rings():
+    """Detected fraud rings (cross-cluster shared fields)."""
+    from scripts.demo_cache import is_loaded, get_fraud_rings
+    if not is_loaded():
+        raise HTTPException(status_code=503, detail="Demo data not loaded yet")
+    return {"rings": get_fraud_rings()}
+
+
+# ------------------------------------------------------------------
+# Clusters endpoints
+# ------------------------------------------------------------------
+@app.get("/clusters")
+async def list_clusters():
+    """List all non-singleton clusters."""
+    from scripts.demo_cache import is_loaded, get_all_clusters
+    if not is_loaded():
+        raise HTTPException(status_code=503, detail="Demo data not loaded yet")
+    return {"clusters": get_all_clusters()}
 
 
 # ------------------------------------------------------------------
