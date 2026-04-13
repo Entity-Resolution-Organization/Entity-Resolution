@@ -19,20 +19,30 @@ Usage:
 import argparse
 import os
 from datetime import datetime
+from pathlib import Path
 
+from dotenv import load_dotenv
 from google.cloud import aiplatform
 from kfp import compiler, dsl
 from kfp.dsl import component
 from utils import get_mlflow_uri
 
-PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "entity-resolution-487121")
-REGION = os.environ.get("GCP_REGION", "us-central1")
-GCS_BUCKET = "entity-resolution-bucket-1"
-STAGING_BUCKET = "gs://entity-resolution-staging-bucket"
+# ── Load environment variables from .env ──────────────────────────────────────
+env_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=env_path)
+
+PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
+REGION = os.environ.get("GCP_REGION")
+GCS_BUCKET = os.environ.get("GCS_BUCKET")
+STAGING_BUCKET = os.environ.get("STAGING_BUCKET")
+AIRFLOW_VM_IP = os.environ.get("AIRFLOW_VM_IP")
+AIRFLOW_USERNAME = os.environ.get("AIRFLOW_USERNAME", "airflow")
+AIRFLOW_PASSWORD = os.environ.get("AIRFLOW_PASSWORD", "airflow")
+
+# ── Derived constants ─────────────────────────────────────────────────────────
 PIPELINE_ROOT = f"gs://{GCS_BUCKET}/pipeline-root"
 MONITORING_YAML = "monitoring_pipeline.yaml"
 GCS_MONITORING_YAML = f"gs://{GCS_BUCKET}/pipelines/monitoring_pipeline.yaml"
-
 TRAINER_IMAGE = f"{REGION}-docker.pkg.dev/{PROJECT_ID}/ml-models/er-trainer:latest"
 
 
@@ -51,7 +61,6 @@ def monitor_op(
     import subprocess
     import sys
 
-    # Install monitoring dependencies
     subprocess.check_call([
         sys.executable, "-m", "pip", "install",
         "evidently>=0.5.0", "scipy", "requests",
@@ -70,8 +79,6 @@ def monitor_op(
         result = monitor.run()
         results[entity_type] = result
 
-
-    # Save detailed summary to GCS for alert_op
     import json as _json
     from google.cloud import storage as _storage
     from datetime import datetime as _dt
@@ -134,7 +141,6 @@ def trigger_retrain_op(
         staging_bucket=f"gs://{gcs_bucket.replace('gs://', '')}",
     )
 
-    # Read pipeline YAML from GCS
     pipeline_yaml_gcs = f"gs://{gcs_bucket}/pipelines/pipeline.yaml"
     local_yaml = "/tmp/pipeline.yaml"
 
@@ -164,10 +170,10 @@ def trigger_retrain_op(
 
 
 @component(base_image=TRAINER_IMAGE)
-
-@component(base_image=TRAINER_IMAGE)
 def trigger_data_pipeline_op(
     airflow_vm_ip: str,
+    airflow_username: str,
+    airflow_password: str,
     gcs_bucket: str,
 ) -> str:
     """Triggers Airflow data pipeline via REST API, waits, then triggers ML pipeline."""
@@ -175,7 +181,9 @@ def trigger_data_pipeline_op(
     import time
     import urllib.request
 
-    # Trigger the data pipeline DAG
+    credentials = f"{airflow_username}:{airflow_password}"
+    auth_header = "Basic " + __import__("base64").b64encode(credentials.encode()).decode()
+
     url = f"http://{airflow_vm_ip}:8080/api/v1/dags/er_data_pipeline/dagRuns"
     payload = json.dumps({"conf": {"triggered_by": "monitoring_pipeline"}}).encode()
     req = urllib.request.Request(
@@ -183,7 +191,7 @@ def trigger_data_pipeline_op(
         data=payload,
         headers={
             "Content-Type": "application/json",
-            "Authorization": "Basic " + __import__("base64").b64encode(b"airflow:airflow").decode(),
+            "Authorization": auth_header,
         },
     )
 
@@ -196,16 +204,13 @@ def trigger_data_pipeline_op(
         print(f"[trigger_data_pipeline_op] Failed to trigger data pipeline: {e}")
         return "failed"
 
-    # Poll for completion (max 2 hours)
     status_url = f"http://{airflow_vm_ip}:8080/api/v1/dags/er_data_pipeline/dagRuns/{dag_run_id}"
-    for i in range(240):  # 240 * 30s = 2 hours
+    for i in range(240):
         time.sleep(30)
         try:
             status_req = urllib.request.Request(
                 status_url,
-                headers={
-                    "Authorization": "Basic " + __import__("base64").b64encode(b"airflow:airflow").decode(),
-                },
+                headers={"Authorization": auth_header},
             )
             resp = urllib.request.urlopen(status_req)
             state = json.loads(resp.read().decode()).get("state", "unknown")
@@ -219,6 +224,7 @@ def trigger_data_pipeline_op(
 
     return "timeout"
 
+
 @component(base_image=TRAINER_IMAGE)
 def alert_op(reason: str, decision: str, gcs_bucket: str) -> None:
     """Send rich Slack notification with metric details."""
@@ -231,7 +237,6 @@ def alert_op(reason: str, decision: str, gcs_bucket: str) -> None:
     with open("/app/config/training_config.yaml") as f:
         config = yaml.safe_load(f)
 
-    # Read detailed summary from GCS
     summary = None
     try:
         client = storage.Client()
@@ -240,7 +245,6 @@ def alert_op(reason: str, decision: str, gcs_bucket: str) -> None:
     except Exception:
         pass
 
-    # Build rich message based on decision
     if decision == "RETRAIN_DATA" and summary:
         lines = ["⚠️ *[ER Monitoring] Data Drift Detected — Retraining Triggered*\n"]
         for et, d in summary.get("entity_results", {}).items():
@@ -296,7 +300,6 @@ def alert_op(reason: str, decision: str, gcs_bucket: str) -> None:
         )
         urllib.request.urlopen(req)
         print("[alert_op] Slack notification sent")
-        print("[alert_op] Slack notification sent")
 
 
 @dsl.pipeline(
@@ -309,8 +312,10 @@ def er_monitoring_pipeline(
     project_id: str = PROJECT_ID,
     region: str = REGION,
     mlflow_tracking_uri: str = "",
+    airflow_vm_ip: str = AIRFLOW_VM_IP,
+    airflow_username: str = AIRFLOW_USERNAME,
+    airflow_password: str = AIRFLOW_PASSWORD,
 ):
-    # Step 1: Run monitoring
     monitor_task = (
         monitor_op(
             gcs_bucket=gcs_bucket,
@@ -321,10 +326,12 @@ def er_monitoring_pipeline(
         .set_cpu_limit("4")
         .set_memory_limit("16G")
     )
-    # Step 2: If DATA DRIFT, trigger data pipeline first, then ML pipeline
+
     with dsl.If(monitor_task.output == "RETRAIN_DATA", name="if-retrain-data"):
         data_task = trigger_data_pipeline_op(
-            airflow_vm_ip="34.31.109.57",
+            airflow_vm_ip=airflow_vm_ip,
+            airflow_username=airflow_username,
+            airflow_password=airflow_password,
             gcs_bucket=gcs_bucket,
         ).set_display_name("trigger_data_pipeline")
 
@@ -341,7 +348,6 @@ def er_monitoring_pipeline(
             gcs_bucket=gcs_bucket,
         ).set_display_name("alert_retrain_data").after(trigger_task)
 
-    # Step 3: If MODEL DRIFT, trigger ML pipeline only
     with dsl.If(monitor_task.output == "RETRAIN_MODEL", name="if-retrain-model"):
         trigger_task_model = trigger_retrain_op(
             gcs_bucket=gcs_bucket,
@@ -356,7 +362,6 @@ def er_monitoring_pipeline(
             gcs_bucket=gcs_bucket,
         ).set_display_name("alert_retrain_model").after(trigger_task_model)
 
-    # Step 4: If HEALTHY, just notify
     with dsl.If(monitor_task.output == "HEALTHY", name="if-healthy"):
         alert_op(
             reason="All metrics within thresholds. No action needed.",
@@ -403,6 +408,9 @@ def run_pipeline(pipeline_yaml: str = MONITORING_YAML) -> None:
             "project_id": PROJECT_ID,
             "region": REGION,
             "mlflow_tracking_uri": mlflow_uri,
+            "airflow_vm_ip": AIRFLOW_VM_IP,
+            "airflow_username": AIRFLOW_USERNAME,
+            "airflow_password": AIRFLOW_PASSWORD,
         },
         enable_caching=False,
     )
