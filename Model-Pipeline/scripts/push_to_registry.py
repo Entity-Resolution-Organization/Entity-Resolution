@@ -195,9 +195,6 @@ COPY config/          ./config/
 ENV MODEL_DIR=/app/model_weights
 ENV CONFIG_PATH=/app/config/training_config.yaml
 ENV ENTITY_TYPE={self.entity_type}
-ENV GCP_PROJECT_ID={self.project}
-ENV BQ_DATASET=entity_resolution
-ENV ENABLE_PREDICTION_LOG=true
 
 EXPOSE 8080
 
