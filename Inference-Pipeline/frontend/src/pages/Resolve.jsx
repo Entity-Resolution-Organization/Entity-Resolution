@@ -185,8 +185,8 @@ export default function Resolve() {
       setRules(ruleResults);
       const attr = await computeAttribution(form, data.probability);
       setAttribution(attr);
-    } catch {
-      setError('Failed to resolve. Check that the API is running.');
+    } catch (e) {
+      setError(e.response?.data?.detail || 'Failed to resolve. Check that the API is running.');
     } finally {
       setLoading(false);
     }

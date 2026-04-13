@@ -31,6 +31,27 @@ log = logging.getLogger("pipeline_runner")
 # Each entry: {status, stage, error, unified_gcs_path, stats, created_at, job_suffix}
 job_store: dict[str, dict] = {}
 
+_MAX_JOBS = 50
+_JOB_TTL_HOURS = 2
+
+
+def _cleanup_old_jobs():
+    """Remove completed/failed jobs older than TTL, keeping store bounded."""
+    if len(job_store) <= _MAX_JOBS:
+        return
+    now = datetime.now(timezone.utc)
+    to_remove = []
+    for jid, job in job_store.items():
+        if job["status"] not in ("complete", "failed"):
+            continue
+        created = datetime.fromisoformat(job["created_at"])
+        if (now - created).total_seconds() > _JOB_TTL_HOURS * 3600:
+            to_remove.append(jid)
+    for jid in to_remove:
+        del job_store[jid]
+    if to_remove:
+        log.info(f"Cleaned up {len(to_remove)} old jobs")
+
 
 def _new_job(job_id: str, gcs_path: str, job_suffix: str) -> dict:
     return {
@@ -90,6 +111,7 @@ def run_unify_pipeline(
     bucket = config["data"]["gcs_bucket"]
     threshold = config["graph"]["cluster_edge_threshold"]
 
+    _cleanup_old_jobs()
     job = _new_job(job_id, records_gcs_path, job_suffix)
     job_store[job_id] = job
 

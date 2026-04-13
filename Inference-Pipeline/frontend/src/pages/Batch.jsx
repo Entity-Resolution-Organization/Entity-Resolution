@@ -26,9 +26,22 @@ function UnifyPanel() {
   const [previewData, setPreviewData] = useState(null);
   const fileRef = useRef();
 
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+
   const handleFile = (e) => {
     const f = e.target.files?.[0];
-    if (f) { setFile(f); setErr(null); setJob(null); setJobId(null); setPreviewData(null); localStorage.removeItem('unify_job_id'); }
+    if (!f) return;
+    if (f.size > MAX_FILE_SIZE) {
+      setErr(`File too large (${(f.size / 1024 / 1024).toFixed(1)} MB). Maximum is 10 MB.`);
+      e.target.value = '';
+      return;
+    }
+    if (!f.name.endsWith('.csv')) {
+      setErr('Only CSV files are accepted.');
+      e.target.value = '';
+      return;
+    }
+    setFile(f); setErr(null); setJob(null); setJobId(null); setPreviewData(null); localStorage.removeItem('unify_job_id');
   };
 
   const handleUpload = async () => {

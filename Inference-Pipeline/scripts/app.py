@@ -63,10 +63,15 @@ CFG = _load_config()
 # ------------------------------------------------------------------
 # App init
 # ------------------------------------------------------------------
+_is_production = os.environ.get("PRODUCTION", "").lower() in ("1", "true", "yes")
+
 app = FastAPI(
     title="Entity Resolution API",
     description="deBERTa + LoRA model serving for PERSON entity resolution",
     version="1.0.0",
+    docs_url=None if _is_production else "/docs",
+    redoc_url=None if _is_production else "/redoc",
+    openapi_url=None if _is_production else "/openapi.json",
 )
 
 app.add_middleware(
@@ -101,20 +106,20 @@ async def startup():
 # Pydantic schemas
 # ------------------------------------------------------------------
 class EntityPair(BaseModel):
-    name1: str = Field(..., example="Robert Smith")
-    address1: str = Field(..., example="123 Main Street")
-    name2: str = Field(..., example="Bob Smith")
-    address2: str = Field(..., example="126 Main St")
-    dob1: str = Field("", example="1985-03-15")
-    dob2: str = Field("", example="1985-03-15")
-    email1: str = Field("", example="rsmith@gmail.com")
-    email2: str = Field("", example="bob.smith@gmail.com")
-    phone1: str = Field("", example="617-555-0142")
-    phone2: str = Field("", example="617-555-0142")
+    name1: str = Field(..., example="Robert Smith", max_length=500)
+    address1: str = Field(..., example="123 Main Street", max_length=500)
+    name2: str = Field(..., example="Bob Smith", max_length=500)
+    address2: str = Field(..., example="126 Main St", max_length=500)
+    dob1: str = Field("", example="1985-03-15", max_length=20)
+    dob2: str = Field("", example="1985-03-15", max_length=20)
+    email1: str = Field("", example="rsmith@gmail.com", max_length=254)
+    email2: str = Field("", example="bob.smith@gmail.com", max_length=254)
+    phone1: str = Field("", example="617-555-0142", max_length=30)
+    phone2: str = Field("", example="617-555-0142", max_length=30)
 
 
 class BatchRequest(BaseModel):
-    pairs: List[EntityPair] = Field(..., max_items=1000)
+    pairs: List[EntityPair] = Field(..., max_length=25)
 
 
 class SearchRequest(BaseModel):
@@ -174,11 +179,24 @@ def _apply_field_rules(deberta_score: float, pair: EntityPair) -> tuple:
     def _norm(s: str) -> str:
         return re.sub(r"[-/\\.\s]", "", s.strip().lower()) if s else ""
 
+    def _is_plausible_dob(s: str) -> bool:
+        """Return True only if s looks like an actual date (YYYY-MM-DD, MM/DD/YYYY, etc.)."""
+        s = s.strip()
+        if not s:
+            return False
+        # Must contain at least some digits to be a date
+        if not re.search(r"\d{4}", s):
+            return False
+        # Quick format check: contains digits + separators only
+        return bool(re.match(r"^[\d\-/. ]+$", s))
+
     # --- DOB ---
-    dob1, dob2 = _norm(pair.dob1), _norm(pair.dob2)
-    has_dob = bool(dob1) and bool(dob2)
-    if has_dob:
-        if dob1 == dob2:
+    dob1_raw, dob2_raw = pair.dob1.strip(), pair.dob2.strip()
+    dob1_valid = _is_plausible_dob(dob1_raw)
+    dob2_valid = _is_plausible_dob(dob2_raw)
+    if dob1_valid and dob2_valid:
+        dob1_norm, dob2_norm = _norm(dob1_raw), _norm(dob2_raw)
+        if dob1_norm == dob2_norm:
             score = min(1.0, score + 0.15)
             adjustments.append("dob match: +0.15")
         else:
@@ -245,6 +263,15 @@ async def resolve(pair: EntityPair):
     """
     t0 = time.monotonic()
 
+    # Reject completely empty inputs — model returns high match on blanks
+    side1_empty = not pair.name1.strip() and not pair.address1.strip()
+    side2_empty = not pair.name2.strip() and not pair.address2.strip()
+    if side1_empty or side2_empty:
+        raise HTTPException(
+            status_code=422,
+            detail="Both name and address are empty on one or both sides. Provide at least a name or address for each entity.",
+        )
+
     # Validate input quality
     warnings = _preprocessor.validate_pair(pair.name1, pair.address1, pair.name2, pair.address2)
 
@@ -256,7 +283,7 @@ async def resolve(pair: EntityPair):
         results: List[PredictionResult] = _client.predict([processed])
     except Exception as e:
         logger.error(f"Prediction failed: {e}")
-        raise HTTPException(status_code=503, detail=f"Model inference failed: {str(e)}")
+        raise HTTPException(status_code=503, detail="Model is temporarily unavailable. Please try again in a moment.")
 
     result = results[0]
     deberta_raw = result.probability
@@ -268,14 +295,14 @@ async def resolve(pair: EntityPair):
     _update_stats(result, time.monotonic() - t0)
 
     return ResolutionResponse(
-        probability=adj_score,
+        probability=round(adj_score, 6),
         decision=decision,
         confidence_level=confidence,
-        field_similarities=result.field_similarities,
-        latency_ms=result.latency_ms,
+        field_similarities={k: round(v, 4) for k, v in result.field_similarities.items()},
+        latency_ms=round(result.latency_ms, 1),
         warnings=warnings,
         flag=flag,
-        deberta_raw=deberta_raw,
+        deberta_raw=round(deberta_raw, 6),
         adjustments=adjustments,
     )
 
@@ -302,7 +329,7 @@ async def resolve_batch(request: BatchRequest):
         predictions: List[PredictionResult] = _client.predict(processed)
     except Exception as e:
         logger.error(f"Batch prediction failed: {e}")
-        raise HTTPException(status_code=503, detail=f"Model inference failed: {str(e)}")
+        raise HTTPException(status_code=503, detail="Model is temporarily unavailable. Please try again in a moment.")
 
     total_ms = (time.monotonic() - t0) * 1000
 
@@ -317,14 +344,14 @@ async def resolve_batch(request: BatchRequest):
         adj_score, decision, confidence, flag, adjustments = _apply_field_rules(deberta_raw, pair)
         responses.append(
             ResolutionResponse(
-                probability=adj_score,
+                probability=round(adj_score, 6),
                 decision=decision,
                 confidence_level=confidence,
-                field_similarities=pred.field_similarities,
-                latency_ms=pred.latency_ms,
+                field_similarities={k: round(v, 4) for k, v in pred.field_similarities.items()},
+                latency_ms=round(pred.latency_ms, 1),
                 warnings=warnings,
                 flag=flag,
-                deberta_raw=deberta_raw,
+                deberta_raw=round(deberta_raw, 6),
                 adjustments=adjustments,
             )
         )
@@ -467,7 +494,6 @@ async def metrics_pipeline():
             "quality_gate": {"status": "unavailable"},
             "bias_report": {"status": "unavailable"},
             "model_metrics": {"status": "unavailable"},
-            "error": str(e),
         }
 
 
@@ -504,6 +530,11 @@ def _load_training_config() -> dict:
         return yaml.safe_load(f)
 
 
+_MAX_CSV_SIZE = 10 * 1024 * 1024  # 10 MB
+_MAX_CSV_ROWS = 5000
+_REQUIRED_COLUMNS = {"id", "name", "address"}
+
+
 @app.post("/unify/upload")
 async def unify_upload(file: UploadFile, background_tasks: BackgroundTasks):
     """
@@ -519,6 +550,66 @@ async def unify_upload(file: UploadFile, background_tasks: BackgroundTasks):
     if len(content) == 0:
         raise HTTPException(status_code=400, detail="Empty file")
 
+    if len(content) > _MAX_CSV_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large ({len(content) / 1024 / 1024:.1f} MB). Maximum is {_MAX_CSV_SIZE // 1024 // 1024} MB.",
+        )
+
+    # Validate CSV structure before uploading to GCS
+    import csv
+    from io import StringIO
+
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            text = content.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            try:
+                text = content.decode("latin-1")
+            except Exception:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Could not read file. Ensure it is a UTF-8 encoded CSV.",
+                )
+
+    try:
+        reader = csv.reader(StringIO(text))
+        rows = list(reader)
+    except csv.Error:
+        raise HTTPException(status_code=400, detail="File is not valid CSV.")
+
+    if len(rows) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="CSV must contain a header row and at least one data row.",
+        )
+
+    headers = {h.strip().lower() for h in rows[0]}
+    missing = _REQUIRED_COLUMNS - headers
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"CSV is missing required columns: {', '.join(sorted(missing))}. Expected: id, name, address.",
+        )
+
+    data_rows = len(rows) - 1
+    if data_rows < 2:
+        raise HTTPException(
+            status_code=400,
+            detail=f"CSV has only {data_rows} data row(s). At least 2 records are needed to form candidate pairs.",
+        )
+
+    if data_rows > _MAX_CSV_ROWS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"CSV has {data_rows:,} rows. Maximum is {_MAX_CSV_ROWS:,} for this demo.",
+        )
+
+    # Re-encode as UTF-8 in case we decoded from latin-1
+    content = text.encode("utf-8")
+
     # Upload to GCS to-process/
     try:
         from google.cloud import storage as gcs
@@ -533,8 +624,10 @@ async def unify_upload(file: UploadFile, background_tasks: BackgroundTasks):
             content, content_type="text/csv"
         )
         logger.info(f"[Unify] Uploaded {len(content)} bytes -> {gcs_path}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"GCS upload failed: {e}")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to upload file. Please try again.")
 
     # Resolve model resource name
     from scripts.build_graph import resolve_model_resource_name
@@ -551,7 +644,7 @@ async def unify_upload(file: UploadFile, background_tasks: BackgroundTasks):
         run_scoring=True,
     )
 
-    return {"job_id": job_id, "status": "queued", "gcs_path": gcs_path}
+    return {"job_id": job_id, "status": "queued", "records": data_rows}
 
 
 # ------------------------------------------------------------------
@@ -562,7 +655,36 @@ async def unify_status(job_id: str):
     """Return current status of a unify pipeline job."""
     if job_id not in job_store:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job_store[job_id]
+    job = job_store[job_id]
+
+    # Sanitize — strip internal paths, clean error messages
+    safe = {
+        "job_id": job["job_id"],
+        "status": job["status"],
+        "stage": job["stage"],
+        "error": _sanitize_error(job.get("error")),
+        "job_suffix": job.get("job_suffix", ""),
+        "stats": job.get("stats", {}),
+        "created_at": job.get("created_at"),
+        "completed_at": job.get("completed_at"),
+    }
+    return safe
+
+
+def _sanitize_error(err: str | None) -> str | None:
+    """Strip internal details from pipeline errors."""
+    if not err:
+        return None
+    lower = err.lower()
+    if "codec" in lower or "decode" in lower:
+        return "File encoding error. Please save as UTF-8 CSV."
+    if "503" in err or "service unavailable" in lower:
+        return "Model is temporarily unavailable. Please try again."
+    if "timeout" in lower:
+        return "Pipeline timed out. Try a smaller CSV."
+    if "no candidate pairs" in lower:
+        return "No matching candidate pairs found. Check that records have name and address fields."
+    return err
 
 
 # ------------------------------------------------------------------
