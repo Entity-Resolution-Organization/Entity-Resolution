@@ -1,0 +1,37 @@
+{
+  "total_records": 500,
+  "source_distribution": {
+    "Billing": 155,
+    "CRM": 154,
+    "Fraud_DB": 181,
+    "OFAC": 10
+  },
+  "unique_emails": 412,
+  "shared_email_groups": 58,
+  "shared_email_records": 136,
+  "ofac_sdn_records": 10,
+  "ofac_adjacent_company_records": 54,
+  "unique_companies": 25,
+  "top_companies": {
+    "Apex Manufacturing": 32,
+    "GlobalTrade Solutions": 30,
+    "DataStream Analytics": 29,
+    "Ironclad Security": 28,
+    "Metro Logistics": 28,
+    "Pinnacle Health Systems": 24,
+    "Coastal Engineering": 23,
+    "Prairie Wind Energy": 22,
+    "Meridian Insurance": 21,
+    "Silverline Consulting": 21
+  },
+  "output_path": "Demo-Dataset/generated_datasets/demo_data.csv",
+  "columns": [
+    "id",
+    "name",
+    "address",
+    "dob",
+    "email",
+    "company",
+    "source"
+  ]
+}
