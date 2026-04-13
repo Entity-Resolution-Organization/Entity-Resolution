@@ -1,0 +1,66 @@
+# ============================================================
+#  Inference Pipeline — Docker Image
+#  Entity Resolution — Group 13, Northeastern MLOps Spring 2026
+# ============================================================
+#
+#  Single image used for both services:
+#    - FastAPI backend  (CMD: uvicorn scripts.app:app)
+#    - Streamlit UI     (CMD: streamlit run scripts/demo_app.py)
+#
+#  Build:
+#    docker build -t entity-resolution-inference .
+#
+#  Run API:
+#    docker run -p 8000:8000 --env-file .env entity-resolution-inference
+#
+#  Run UI:
+#    docker run -p 8501:8501 --env-file .env \
+#      entity-resolution-inference \
+#      streamlit run scripts/demo_app.py --server.port 8501 --server.address 0.0.0.0
+# ============================================================
+
+FROM python:3.10-slim
+
+# --- System dependencies ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Working directory ---
+WORKDIR /app
+
+# --- Copy requirements first (layer caching) ---
+COPY requirements.txt .
+
+# --- Install Python dependencies ---
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+# --- Copy application code ---
+COPY config/     ./config/
+COPY scripts/    ./scripts/
+COPY dags/       ./dags/
+COPY static/     ./static/
+
+# --- Create non-root user for security ---
+RUN useradd --create-home --shell /bin/bash appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
+# --- Environment defaults (overridden by .env or Cloud Run env vars) ---
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PORT=8000
+
+# --- Health check ---
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
+
+# --- Default: run FastAPI backend ---
+CMD ["uvicorn", "scripts.app:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--workers", "2"]

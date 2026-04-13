@@ -123,7 +123,7 @@ class EntityResolutionEvaluator:
         local_dir   = self.config["data"]["local_data_dir"]
         os.makedirs(local_dir, exist_ok=True)
 
-        blob_path  = f"{gcs_path}/{self.entity_type}/test.csv"
+        blob_path  = f"{gcs_path}/test.csv"
         local_path = os.path.join(local_dir, f"{self.entity_type}_test.csv")
 
         if os.path.exists(local_path):
@@ -233,18 +233,20 @@ class EntityResolutionEvaluator:
         max_length = self.config["model"]["max_length"]
         batch_size = self.config["training"]["batch_size"]
 
-        # Build text pairs — same format as train.py
-        pairs       = [self._build_text_pair(row, cols) for _, row in test_df.iterrows()]
-        texts_a     = [p[0] for p in pairs]
-        texts_b     = [p[1] for p in pairs]
+        # Build text pairs
+        texts_a = ("record_1 name: " + test_df[cols['name1']].fillna("[MISSING]").astype(str) + " address: " + test_df[
+            cols['address1']].fillna("[MISSING]").astype(str))
+        texts_b = ("record_2 name: " + test_df[cols['name2']].fillna("[MISSING]").astype(str) + " address: " + test_df[
+            cols['address2']].fillna("[MISSING]").astype(str))
+
         true_labels = test_df[cols["label"]].values
 
         all_probs = []
 
         with torch.no_grad():
             for i in range(0, len(texts_a), batch_size):
-                batch_a = texts_a[i : i + batch_size]
-                batch_b = texts_b[i : i + batch_size]
+                batch_a = texts_a.iloc[i: i + batch_size].tolist()
+                batch_b = texts_b.iloc[i: i + batch_size].tolist()
 
                 # FIX 1 cont: text-pair tokenizer call — real [SEP] tokens
                 enc = tokenizer(
@@ -487,8 +489,6 @@ def main():
     config       = load_config(config_path)
     entity_types = config["data"]["entity_types"]
 
-    # FIX 2: env var takes priority over config — needed for Vertex AI components
-    # which cannot resolve the docker hostname 'mlflow'
     mlflow.set_tracking_uri(
         os.environ.get("MLFLOW_TRACKING_URI") or config["mlflow"]["tracking_uri"]
     )

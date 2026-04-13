@@ -1,0 +1,348 @@
+# -*- coding: utf-8 -*-
+"""
+batch_inference.py
+==================
+Standalone batch inference script called by the Airflow DAG.
+
+Flow:
+  1. Read pairs CSV from gs://{bucket}/inference/input/
+  2. Validate columns
+  3. Preprocess all pairs
+  4. Call model client in batches of 256
+  5. Write results CSV to gs://{bucket}/inference/results/{timestamp}/
+  6. Write summary JSON to same results folder
+  7. Log metrics to MLflow
+
+Usage (standalone):
+    python3 -m scripts.batch_inference \
+        --input-path inference/input/pairs.csv \
+        --output-prefix inference/results/
+
+Usage (called by Airflow):
+    from scripts.batch_inference import run_batch_inference
+    run_batch_inference(input_gcs_path="inference/input/pairs.csv")
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import io
+import json
+import logging
+import os
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+import yaml
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s -- %(message)s",
+)
+
+# ------------------------------------------------------------------
+# Config
+# ------------------------------------------------------------------
+_CONFIG_PATH = Path(__file__).parent.parent / "config" / "inference_config.yaml"
+
+
+def _load_config() -> dict:
+    with open(_CONFIG_PATH) as f:
+        raw = f.read()
+    for key, val in os.environ.items():
+        raw = raw.replace(f"${{{key}}}", val)
+    return yaml.safe_load(raw)
+
+
+# ------------------------------------------------------------------
+# GCS helpers
+# ------------------------------------------------------------------
+def _gcs_client(project_id: str):
+    from google.cloud import storage
+
+    return storage.Client(project=project_id)
+
+
+def _read_csv_from_gcs(bucket_name: str, gcs_path: str, project_id: str) -> list[dict]:
+    """Download a CSV from GCS and return as list of dicts."""
+    logger.info(f"Reading input from gs://{bucket_name}/{gcs_path}")
+    client = _gcs_client(project_id)
+    bucket = client.bucket(bucket_name)
+    content = bucket.blob(gcs_path).download_as_text()
+    reader = csv.DictReader(io.StringIO(content))
+    rows = list(reader)
+    logger.info(f"Loaded {len(rows)} rows")
+    return rows
+
+
+def _write_to_gcs(
+    bucket_name: str, gcs_path: str, content: str, project_id: str, content_type: str = "text/csv"
+) -> None:
+    """Upload a string to GCS."""
+    client = _gcs_client(project_id)
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(gcs_path)
+    blob.upload_from_string(content, content_type=content_type)
+    logger.info(f"Written to gs://{bucket_name}/{gcs_path}")
+
+
+# ------------------------------------------------------------------
+# Validation
+# ------------------------------------------------------------------
+REQUIRED_COLUMNS = {"name1", "address1", "name2", "address2"}
+
+
+def validate_input(rows: list[dict]) -> tuple[bool, str]:
+    """
+    Check that the input CSV has the required columns and is not empty.
+    Returns (is_valid, error_message).
+    """
+    if not rows:
+        return False, "Input CSV is empty"
+
+    columns = set(rows[0].keys())
+    missing = REQUIRED_COLUMNS - columns
+    if missing:
+        return False, f"Missing required columns: {missing}. Found: {columns}"
+
+    return True, ""
+
+
+# ------------------------------------------------------------------
+# Core batch inference
+# ------------------------------------------------------------------
+def run_batch_inference(
+    input_gcs_path: Optional[str] = None,
+    output_prefix: Optional[str] = None,
+    local_input_path: Optional[str] = None,
+    dry_run: bool = False,
+) -> dict:
+    """
+    Run batch inference on a CSV of entity pairs.
+
+    Args:
+        input_gcs_path  : GCS path (relative to bucket) for input CSV
+        output_prefix   : GCS path prefix for output (default from config)
+        local_input_path: Local CSV path (for testing without GCS)
+        dry_run         : If True, skip writing output to GCS
+
+    Returns:
+        summary dict with match_rate, counts, timing, output_path
+    """
+    cfg = _load_config()
+    bucket_name = cfg["gcp"]["bucket_name"]
+    project_id = cfg["gcp"]["project_id"]
+    batch_size = cfg["vertex_ai"]["max_batch_size"]
+
+    # Timestamp for output folder
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    output_prefix = output_prefix or cfg["gcs_paths"]["inference_results"]
+    results_path = f"{output_prefix}{ts}/"
+
+    # ------------------------------------------------------------------
+    # 1. Load input
+    # ------------------------------------------------------------------
+    if local_input_path:
+        logger.info(f"Reading local input: {local_input_path}")
+        with open(local_input_path) as f:
+            rows = list(csv.DictReader(f))
+    elif input_gcs_path:
+        rows = _read_csv_from_gcs(bucket_name, input_gcs_path, project_id)
+    else:
+        # Auto-discover latest file in input bucket path
+        input_prefix = cfg["gcs_paths"]["inference_input"]
+        logger.info(f"Auto-discovering input in gs://{bucket_name}/{input_prefix}")
+        client = _gcs_client(project_id)
+        blobs = list(client.bucket(bucket_name).list_blobs(prefix=input_prefix))
+        csv_blobs = [b for b in blobs if b.name.endswith(".csv")]
+        if not csv_blobs:
+            raise FileNotFoundError(f"No CSV files found in gs://{bucket_name}/{input_prefix}")
+        latest = sorted(csv_blobs, key=lambda b: b.updated, reverse=True)[0]
+        logger.info(f"Using latest input: {latest.name}")
+        rows = _read_csv_from_gcs(bucket_name, latest.name, project_id)
+
+    # ------------------------------------------------------------------
+    # 2. Validate
+    # ------------------------------------------------------------------
+    is_valid, err_msg = validate_input(rows)
+    if not is_valid:
+        raise ValueError(f"Input validation failed: {err_msg}")
+
+    total_pairs = len(rows)
+    logger.info(f"Processing {total_pairs} pairs in batches of {batch_size}")
+
+    # ------------------------------------------------------------------
+    # 3. Preprocess + predict
+    # ------------------------------------------------------------------
+    from scripts.model_client import get_client
+    from scripts.preprocess import InferencePreprocessor
+
+    preprocessor = InferencePreprocessor()
+    client = get_client()
+
+    all_results = []
+    t_start = time.monotonic()
+
+    for i in range(0, total_pairs, batch_size):
+        batch_rows = rows[i : i + batch_size]
+        batch_num = i // batch_size + 1
+        total_batches = (total_pairs + batch_size - 1) // batch_size
+
+        logger.info(f"Batch {batch_num}/{total_batches} -- {len(batch_rows)} pairs")
+
+        # Preprocess
+        processed = preprocessor.prepare_batch(batch_rows)
+
+        # Predict
+        predictions = client.predict(processed)
+
+        # Merge input + predictions
+        for row, pred in zip(batch_rows, predictions):
+            all_results.append(
+                {
+                    "name1": row.get("name1", ""),
+                    "address1": row.get("address1", ""),
+                    "name2": row.get("name2", ""),
+                    "address2": row.get("address2", ""),
+                    "probability": round(pred.probability, 4),
+                    "decision": pred.decision,
+                    "confidence_level": pred.confidence_level,
+                    "latency_ms": round(pred.latency_ms, 2),
+                }
+            )
+
+    elapsed = time.monotonic() - t_start
+
+    # ------------------------------------------------------------------
+    # 4. Build summary
+    # ------------------------------------------------------------------
+    decisions = [r["decision"] for r in all_results]
+    match_count = decisions.count("MATCH")
+    no_match_count = decisions.count("NO-MATCH")
+    review_count = decisions.count("REVIEW")
+
+    confidence_dist = {
+        "HIGH": sum(1 for r in all_results if r["confidence_level"] == "HIGH"),
+        "MEDIUM": sum(1 for r in all_results if r["confidence_level"] == "MEDIUM"),
+        "LOW": sum(1 for r in all_results if r["confidence_level"] == "LOW"),
+    }
+
+    summary = {
+        "input_path": input_gcs_path or local_input_path or "auto-discovered",
+        "output_path": f"gs://{bucket_name}/{results_path}",
+        "total_pairs": total_pairs,
+        "match_count": match_count,
+        "no_match_count": no_match_count,
+        "review_count": review_count,
+        "match_rate": round(match_count / total_pairs, 4) if total_pairs else 0,
+        "confidence_distribution": confidence_dist,
+        "processing_time_s": round(elapsed, 2),
+        "avg_latency_ms": (
+            round(sum(r["latency_ms"] for r in all_results) / total_pairs, 2) if total_pairs else 0
+        ),
+        "timestamp": ts,
+        "model_client": type(client).__name__,
+    }
+
+    logger.info(
+        f"Completed: {total_pairs} pairs in {elapsed:.1f}s | "
+        f"MATCH={match_count} NO-MATCH={no_match_count} REVIEW={review_count} | "
+        f"match_rate={summary['match_rate']:.1%}"
+    )
+
+    # ------------------------------------------------------------------
+    # 5. Write outputs to GCS
+    # ------------------------------------------------------------------
+    if not dry_run:
+        # Results CSV
+        output = io.StringIO()
+        if all_results:
+            writer = csv.DictWriter(output, fieldnames=all_results[0].keys())
+            writer.writeheader()
+            writer.writerows(all_results)
+        results_csv_path = f"{results_path}results.csv"
+        _write_to_gcs(bucket_name, results_csv_path, output.getvalue(), project_id, "text/csv")
+
+        # Summary JSON
+        summary_path = f"{results_path}summary.json"
+        _write_to_gcs(
+            bucket_name, summary_path, json.dumps(summary, indent=2), project_id, "application/json"
+        )
+
+        logger.info(f"Results written to gs://{bucket_name}/{results_path}")
+    else:
+        logger.info("Dry run -- skipping GCS writes")
+
+    # ------------------------------------------------------------------
+    # 6. Log to MLflow (best-effort, non-blocking)
+    # ------------------------------------------------------------------
+    _log_to_mlflow(summary, cfg)
+
+    return summary
+
+
+# ------------------------------------------------------------------
+# MLflow logging
+# ------------------------------------------------------------------
+def _log_to_mlflow(summary: dict, cfg: dict) -> None:
+    """Log batch inference summary to MLflow. Non-blocking on failure."""
+    try:
+        import mlflow
+
+        tracking_uri = cfg.get("mlflow", {}).get("tracking_uri", "")
+        if not tracking_uri:
+            return
+
+        mlflow.set_tracking_uri(tracking_uri)
+        mlflow.set_experiment(cfg["mlflow"]["experiment_name"])
+
+        with mlflow.start_run(run_name=f"batch_inference_{summary['timestamp']}"):
+            mlflow.log_metrics(
+                {
+                    "match_rate": summary["match_rate"],
+                    "match_count": summary["match_count"],
+                    "no_match_count": summary["no_match_count"],
+                    "review_count": summary["review_count"],
+                    "total_pairs": summary["total_pairs"],
+                    "processing_time_s": summary["processing_time_s"],
+                    "avg_latency_ms": summary["avg_latency_ms"],
+                }
+            )
+            mlflow.log_params(
+                {
+                    "model_client": summary["model_client"],
+                    "input_path": summary["input_path"],
+                }
+            )
+        logger.info("Metrics logged to MLflow")
+    except Exception as e:
+        logger.warning(f"MLflow logging skipped: {e}")
+
+
+# ------------------------------------------------------------------
+# CLI entry point
+# ------------------------------------------------------------------
+def _parse_args():
+    parser = argparse.ArgumentParser(description="Run batch entity resolution inference")
+    parser.add_argument("--input-path", help="GCS path (relative to bucket) for input CSV")
+    parser.add_argument("--output-prefix", help="GCS path prefix for results output")
+    parser.add_argument("--local-input", help="Local CSV path (for testing)")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Run inference but skip writing to GCS"
+    )
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = _parse_args()
+    summary = run_batch_inference(
+        input_gcs_path=args.input_path,
+        output_prefix=args.output_prefix,
+        local_input_path=args.local_input,
+        dry_run=args.dry_run,
+    )
+    print(json.dumps(summary, indent=2))
