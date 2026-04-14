@@ -736,7 +736,6 @@ def deploy_to_endpoint_op(
 
 
 @component(base_image=TRAINER_IMAGE)
-@component(base_image=TRAINER_IMAGE)
 def alert_op(reason: str, mlflow_tracking_uri: str, gcs_bucket: str = "") -> None:
     """Send rich Slack notification with metrics."""
     import json
@@ -1001,42 +1000,6 @@ def run_pipeline(
 
 
 # =============================================================================
-# Entry point
-# =============================================================================
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python pipeline.py --compile
-  python pipeline.py --compile --upload
-  python pipeline.py --run
-        """,
-    )
-    parser.add_argument(
-        "--compile", action="store_true", help="Compile to pipeline.yaml"
-    )
-    parser.add_argument(
-        "--upload", action="store_true", help="Upload pipeline.yaml to GCS"
-    )
-    parser.add_argument(
-        "--run", action="store_true", help="Compile + upload + submit to Vertex AI"
-    )
-    parser.add_argument("--output", default=PIPELINE_YAML)
-    args = parser.parse_args()
-
-    if not any([args.compile, args.upload, args.run]):
-        parser.print_help()
-    else:
-        if args.compile or args.run:
-            compile_pipeline(args.output)
-        if args.upload or args.run:
-            upload_to_gcs(args.output)
-        if args.run:
-            run_pipeline(
-                pipeline_yaml=args.output
-            )  # =============================================================================
 # Entry point
 # =============================================================================
 
