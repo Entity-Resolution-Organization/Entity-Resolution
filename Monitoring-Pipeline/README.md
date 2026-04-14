@@ -119,6 +119,7 @@ View pipeline run history:
 ```
 https://console.cloud.google.com/vertex-ai/pipelines?project=<GCP_PROJECT_ID>
 ```
+Use the GCP_PROJECT_ID from your .env file
 
 ## File Structure
 
