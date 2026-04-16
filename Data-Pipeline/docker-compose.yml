@@ -25,6 +25,11 @@ x-airflow-common: &airflow-common
     GCS_BUCKET: ${GCS_BUCKET:-}
     DVC_GCS_BUCKET: ${DVC_GCS_BUCKET:-entity-resolution-dvc-bucket}
     GOOGLE_CLOUD_PROJECT: ${GCP_PROJECT_ID:-}
+    # Model Pipeline Trigger Configuration
+    MODEL_PIPELINE_TEMPLATE_PATH: ${MODEL_PIPELINE_TEMPLATE_PATH:-gs://entity-resolution-bucket-1/pipelines/pipeline.yaml}
+    MODEL_PIPELINE_ROOT: ${MODEL_PIPELINE_ROOT:-gs://entity-resolution-bucket-1/pipeline-root}
+    VERTEX_AI_STAGING_BUCKET: ${VERTEX_AI_STAGING_BUCKET:-gs://entity-resolution-staging-bucket}
+    MODEL_PIPELINE_GCS_BUCKET: ${MODEL_PIPELINE_GCS_BUCKET:-entity-resolution-bucket-1}
     # Python path for custom scripts
     PYTHONPATH: /opt/airflow/scripts
   volumes:

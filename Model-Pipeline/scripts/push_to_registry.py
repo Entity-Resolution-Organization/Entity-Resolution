@@ -177,6 +177,14 @@ WORKDIR /app
 RUN pip install --no-cache-dir \\
     {packages_str}
 
+RUN python -c "
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+AutoTokenizer.from_pretrained('microsoft/deberta-v3-base', cache_dir='/app/cache')
+AutoModelForSequenceClassification.from_pretrained(
+    'microsoft/deberta-v3-base', num_labels=2, cache_dir='/app/cache')
+"
+ENV TRANSFORMERS_CACHE=/app/cache
+
 # LoRA adapter weights baked into image
 COPY model_weights/ ./model_weights/
 
@@ -187,6 +195,9 @@ COPY config/          ./config/
 ENV MODEL_DIR=/app/model_weights
 ENV CONFIG_PATH=/app/config/training_config.yaml
 ENV ENTITY_TYPE={self.entity_type}
+ENV GCP_PROJECT_ID={self.project}
+ENV BQ_DATASET=entity_resolution
+ENV ENABLE_PREDICTION_LOG=true
 
 EXPOSE 8080
 

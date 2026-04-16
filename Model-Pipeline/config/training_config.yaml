@@ -203,14 +203,15 @@ gcp:
       - "sentencepiece==0.1.99"   
       - "pyyaml>=6.0"             
       - "pandas"                  
+      - "google-cloud-bigquery>=3.0.0"
     tmp_build_dir: "/tmp/er_push"
 
 # -----------------------------------------------------------------------------
 # Notifications
 # -----------------------------------------------------------------------------
 notifications:
-  enabled: false
-  slack_webhook_url: null
+  enabled: true
+  slack_webhook_url: ""
   email_recipients: []
 
 # -----------------------------------------------------------------------------
