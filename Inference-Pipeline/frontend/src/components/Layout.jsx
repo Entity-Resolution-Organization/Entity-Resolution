@@ -54,7 +54,7 @@ export default function Layout() {
 
       {/* ── Top navigation bar ─────────────────────────── */}
       <header className="sticky top-0 z-30 border-b border-white/[0.06] bg-[#0a0a0a]">
-        <div className="flex items-center h-14 px-5 md:px-8">
+        <div className="relative flex items-center h-14 px-5 md:px-8">
 
           {/* Brand */}
           <NavLink to="/" className="flex items-center gap-2.5 shrink-0 no-underline">
@@ -66,8 +66,8 @@ export default function Layout() {
             </span>
           </NavLink>
 
-          {/* Desktop nav */}
-          <nav className="hidden md:flex items-center gap-1 ml-8" aria-label="Main navigation">
+          {/* Desktop nav — absolutely centered */}
+          <nav className="hidden md:flex items-center gap-1 absolute left-1/2 -translate-x-1/2" aria-label="Main navigation">
             {NAV_ITEMS.map(({ to, icon: Icon, label }) => (
               <NavLink
                 key={to}
@@ -97,8 +97,6 @@ export default function Layout() {
               </NavLink>
             ))}
           </nav>
-
-          <div className="ml-auto" />
 
           {/* Mobile hamburger */}
           <button

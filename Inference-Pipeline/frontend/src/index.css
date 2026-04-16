@@ -61,7 +61,10 @@
 }
 
 /* ── Base ───────────────────────────────────────────────── */
-html { scroll-behavior: smooth; }
+html {
+  scroll-behavior: smooth;
+  overflow-x: hidden;
+}
 
 body {
   background: var(--bg-deep);
@@ -69,6 +72,7 @@ body {
   font-family: var(--font-body);
   font-weight: 400;
   margin: 0;
+  overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

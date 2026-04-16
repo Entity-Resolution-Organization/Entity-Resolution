@@ -539,8 +539,8 @@ def _load_training_config() -> dict:
         return yaml.safe_load(f)
 
 
-_MAX_CSV_SIZE = 10 * 1024 * 1024  # 10 MB
-_MAX_CSV_ROWS = 5000
+_MAX_CSV_SIZE = 20 * 1024 * 1024  # 20 MB
+_MAX_CSV_ROWS = 2000
 _REQUIRED_COLUMNS = {"id", "name", "address"}
 
 
@@ -638,12 +638,35 @@ async def unify_upload(file: UploadFile, background_tasks: BackgroundTasks):
     except Exception:
         raise HTTPException(status_code=500, detail="Failed to upload file. Please try again.")
 
+    # Reject if a pipeline is already running (one at a time for demo stability)
+    active_jobs = [j for j in job_store.values() if j["status"] in ("queued", "running")]
+    if active_jobs:
+        active = active_jobs[0]
+        raise HTTPException(
+            status_code=409,
+            detail=f"Another pipeline is already running (job {active['job_id']}). Please wait for it to finish.",
+        )
+
     # Resolve model resource name
     from scripts.build_graph import resolve_model_resource_name
     model_resource_name = resolve_model_resource_name(training_cfg)
 
-    # Create job and launch background pipeline
+    # Create job and register in store immediately (before background task)
+    # so concurrent uploads can see it
     job_id = create_job_id()
+    from datetime import datetime, timezone
+    job_store[job_id] = {
+        "job_id": job_id,
+        "status": "queued",
+        "stage": "",
+        "error": None,
+        "gcs_path": gcs_path,
+        "job_suffix": file.filename.replace(".csv", ""),
+        "unified_gcs_path": None,
+        "stats": {},
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "completed_at": None,
+    }
     background_tasks.add_task(
         run_unify_pipeline,
         job_id=job_id,

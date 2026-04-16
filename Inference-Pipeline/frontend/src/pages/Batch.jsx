@@ -5,7 +5,7 @@ import {
   Check, AlertTriangle, Table2,
   Download, GitMerge, CheckCircle2, XCircle,
 } from 'lucide-react';
-import { uploadUnify, getUnifyStatus, downloadUnified } from '../api/client';
+import { uploadUnify, getUnifyStatus, downloadUnified, getUnifyJobs } from '../api/client';
 import { spring, easeOut, dur, STAGGER_MS } from '../motion';
 
 /* -- Unify pipeline stages ------------------------------ */
@@ -26,13 +26,13 @@ function UnifyPanel() {
   const [previewData, setPreviewData] = useState(null);
   const fileRef = useRef();
 
-  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+  const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB
 
   const handleFile = (e) => {
     const f = e.target.files?.[0];
     if (!f) return;
     if (f.size > MAX_FILE_SIZE) {
-      setErr(`File too large (${(f.size / 1024 / 1024).toFixed(1)} MB). Maximum is 10 MB.`);
+      setErr(`File too large (${(f.size / 1024 / 1024).toFixed(1)} MB). Maximum is 20 MB.`);
       e.target.value = '';
       return;
     }
@@ -44,8 +44,12 @@ function UnifyPanel() {
     setFile(f); setErr(null); setJob(null); setJobId(null); setPreviewData(null); localStorage.removeItem('unify_job_id');
   };
 
+  const uploadInFlight = useRef(false);
+
   const handleUpload = async () => {
     if (!file) return;
+    if (uploadInFlight.current) return;
+    uploadInFlight.current = true;
     setUploading(true); setErr(null);
     try {
       const { data } = await uploadUnify(file);
@@ -55,8 +59,30 @@ function UnifyPanel() {
       setErr(e.response?.data?.detail || 'Upload failed');
     } finally {
       setUploading(false);
+      // Keep lock for 3 seconds after completion to prevent rapid re-click
+      setTimeout(() => { uploadInFlight.current = false; }, 3000);
     }
   };
+
+  // On mount: if no local jobId, check for any active job on backend
+  // (useful when someone else started the pipeline from another laptop/tab)
+  useEffect(() => {
+    if (jobId) return; // already tracking our own job
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await getUnifyJobs();
+        const active = (data.jobs || []).find(j => j.status === 'queued' || j.status === 'running');
+        if (active && !cancelled) {
+          setJobId(active.job_id);
+          localStorage.setItem('unify_job_id', active.job_id);
+        }
+      } catch {
+        // silent — backend may not be reachable yet
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []); // run once on mount
 
   // Poll for status
   useEffect(() => {

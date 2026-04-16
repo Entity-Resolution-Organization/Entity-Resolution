@@ -45,14 +45,13 @@ export default function Analytics() {
       </motion.div>
 
       {/* KPI cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
         {[
           { label: 'Total records', value: METRICS.n_records.toLocaleString(), Icon: Database, color: 'text-blue-400' },
           { label: 'Clusters formed', value: METRICS.n_clusters.toLocaleString(), Icon: GitMerge, color: 'text-[var(--accent)]' },
           { label: 'Singleton rate', value: `${(METRICS.singleton_rate * 100).toFixed(1)}%`, Icon: Users, color: 'text-stone-400' },
           { label: 'Avg cluster size', value: METRICS.cluster_size_mean.toFixed(2), Icon: TrendingUp, color: 'text-emerald-400' },
           { label: 'Max cluster', value: METRICS.cluster_size_max, Icon: AlertTriangle, color: 'text-amber-400' },
-          { label: 'Avg DeBERTa', value: METRICS.avg_deberta_score.toFixed(3), Icon: BarChart3, color: 'text-emerald-400' },
         ].map((kpi, i) => (
           <motion.div
             key={kpi.label}
@@ -115,7 +114,6 @@ export default function Analytics() {
           <h3 className="section-label mb-4">Edge quality</h3>
           <div className="space-y-4">
             {[
-              { label: 'Avg DeBERTa score', value: '0.935', bar: 93.5, color: 'bg-emerald-500' },
               { label: 'Cluster edge threshold', value: '0.45', bar: 45, color: 'bg-amber-500' },
               { label: 'Keep threshold', value: '0.30', bar: 30, color: 'bg-red-500' },
             ].map((m, i) => (
