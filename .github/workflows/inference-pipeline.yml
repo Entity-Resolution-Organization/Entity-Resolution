@@ -2,12 +2,12 @@
 
 on:
   push:
-    branches: [main, feature/inference-pipeline]
+    branches: [main, dev]
     paths:
       - "Inference-Pipeline/**"
       - ".github/workflows/inference-pipeline.yml"
   pull_request:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - "Inference-Pipeline/**"
 
