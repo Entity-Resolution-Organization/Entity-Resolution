@@ -19,7 +19,6 @@ Usage (from app.py):
 
 import logging
 import os
-import time
 import traceback
 import uuid
 from datetime import datetime, timezone
