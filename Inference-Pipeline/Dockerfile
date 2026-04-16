@@ -1,27 +1,30 @@
 # ============================================================
-#  Inference Pipeline — Docker Image
+#  Inference Pipeline — Docker Image (Cloud Run)
 #  Entity Resolution — Group 13, Northeastern MLOps Spring 2026
 # ============================================================
 #
-#  Single image used for both services:
-#    - FastAPI backend  (CMD: uvicorn scripts.app:app)
-#    - Streamlit UI     (CMD: streamlit run scripts/demo_app.py)
+#  Single container: FastAPI backend + React frontend (static)
 #
 #  Build:
 #    docker build -t entity-resolution-inference .
 #
-#  Run API:
+#  Run:
 #    docker run -p 8000:8000 --env-file .env entity-resolution-inference
-#
-#  Run UI:
-#    docker run -p 8501:8501 --env-file .env \
-#      entity-resolution-inference \
-#      streamlit run scripts/demo_app.py --server.port 8501 --server.address 0.0.0.0
 # ============================================================
 
+# --- Stage 1: Build React frontend ---
+FROM node:20-slim AS frontend-build
+
+WORKDIR /frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY frontend/ ./
+RUN npm run build
+
+# --- Stage 2: Python backend ---
 FROM python:3.10-slim
 
-# --- System dependencies ---
+# System dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
@@ -29,38 +32,41 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# --- Working directory ---
 WORKDIR /app
 
-# --- Copy requirements first (layer caching) ---
+# Python dependencies (layer cached)
 COPY requirements.txt .
-
-# --- Install Python dependencies ---
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-# --- Copy application code ---
+# Application code
 COPY config/     ./config/
 COPY scripts/    ./scripts/
 COPY dags/       ./dags/
 COPY static/     ./static/
 
-# --- Create non-root user for security ---
+# Copy built frontend from stage 1
+COPY --from=frontend-build /frontend/dist ./frontend/dist
+
+# Non-root user
 RUN useradd --create-home --shell /bin/bash appuser \
     && chown -R appuser:appuser /app
 USER appuser
 
-# --- Environment defaults (overridden by .env or Cloud Run env vars) ---
+# Environment defaults
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PORT=8000
+    PYTHONPATH=/app \
+    PORT=8000 \
+    PRODUCTION=true \
+    CONFIG_PATH=/app/config/training_config.yaml
 
-# --- Health check ---
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# --- Default: run FastAPI backend ---
+# Run FastAPI (serves both API + frontend static files)
 CMD ["uvicorn", "scripts.app:app", \
      "--host", "0.0.0.0", \
      "--port", "8000", \
-     "--workers", "2"]
+     "--workers", "1"]

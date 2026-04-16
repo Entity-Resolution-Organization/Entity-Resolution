@@ -1,8 +1,7 @@
-import { useState, useCallback, useRef, useEffect, lazy, Suspense } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Loader2, Share2, Database } from 'lucide-react';
-
-const ForceGraph2D = lazy(() => import('react-force-graph-2d'));
+import ForceGraph2D from 'react-force-graph-2d';
 import { resolveEntities } from '../api/client';
 import { spring, dur, STAGGER_MS } from '../motion';
 
@@ -254,7 +253,6 @@ export default function Network() {
         style={{ minHeight: 640 }}
       >
         {graphData ? (
-          <Suspense fallback={<div className="flex h-full items-center justify-center"><div className="h-6 w-6 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin" /></div>}>
             <ForceGraph2D
               ref={graphRef}
               graphData={graphData}
@@ -278,7 +276,6 @@ export default function Network() {
               warmupTicks={50}
               cooldownTime={3000}
             />
-          </Suspense>
         ) : (
           <div className="flex flex-col items-center justify-center gap-3" style={{ minHeight: 600 }}>
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-black/[0.02] border border-black/[0.06]">

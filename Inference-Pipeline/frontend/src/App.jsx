@@ -9,9 +9,12 @@ const Resolve = lazy(() => import('./pages/Resolve'));
 const Scenarios = lazy(() => import('./pages/Scenarios'));
 const Network = lazy(() => import('./pages/Network'));
 const Batch = lazy(() => import('./pages/Batch'));
-const Pipeline = lazy(() => import('./pages/Pipeline'));
-const Monitor = lazy(() => import('./pages/Monitor'));
+const Clusters = lazy(() => import('./pages/Clusters'));
+const Customer360 = lazy(() => import('./pages/Customer360'));
+const KYC = lazy(() => import('./pages/KYC'));
 const Fraud = lazy(() => import('./pages/Fraud'));
+const Analytics = lazy(() => import('./pages/Analytics'));
+const Monitor = lazy(() => import('./pages/Monitor'));
 const NotFound = lazy(() => import('./pages/NotFound'));
 
 export default function App() {
@@ -23,13 +26,17 @@ export default function App() {
             <Routes>
               <Route element={<Layout />}>
                 <Route index element={<Home />} />
+                <Route path="match" element={<Resolve />} />
                 <Route path="resolve" element={<Resolve />} />
                 <Route path="scenarios" element={<Scenarios />} />
                 <Route path="network" element={<Network />} />
                 <Route path="batch" element={<Batch />} />
-                <Route path="pipeline" element={<Pipeline />} />
-                <Route path="monitor" element={<Monitor />} />
+                <Route path="clusters" element={<Clusters />} />
+                <Route path="customer360" element={<Customer360 />} />
+                <Route path="kyc" element={<KYC />} />
                 <Route path="fraud" element={<Fraud />} />
+                <Route path="analytics" element={<Analytics />} />
+                <Route path="monitor" element={<Monitor />} />
                 <Route path="*" element={<NotFound />} />
               </Route>
             </Routes>

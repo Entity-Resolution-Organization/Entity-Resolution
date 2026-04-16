@@ -17,51 +17,30 @@ const PRESETS = {
     firstName2: 'Robert', lastName2: 'Smith', street2: '123 Main Street', city2: 'Raleigh', state2: 'NC',
     email1: 'rsmith@gmail.com', email2: 'rsmith@gmail.com', dob1: '1985-03-15', dob2: '1985-03-15',
   },
-  'Nickname (Bob/Robert)': {
+  'Nickname + DOB Match': {
     firstName1: 'Robert', lastName1: 'Smith', street1: '123 Main Street', city1: 'Raleigh', state1: 'NC',
-    firstName2: 'Bob', lastName2: 'Smith', street2: '123 Main Street', city2: 'Raleigh', state2: 'NC',
-    email1: 'rsmith@gmail.com', email2: 'bsmith@gmail.com',
+    firstName2: 'Bob', lastName2: 'Smith', street2: '123 Main St', city2: 'Raleigh', state2: 'NC',
+    dob1: '1985-03-15', dob2: '1985-03-15',
   },
-  'Typo in Name': {
+  'DOB Mismatch (Veto)': {
     firstName1: 'Robert', lastName1: 'Smith', street1: '123 Main Street', city1: 'Raleigh', state1: 'NC',
-    firstName2: 'Robrt', lastName2: 'Smith', street2: '123 Main Street', city2: 'Raleigh', state2: 'NC',
+    firstName2: 'Robert', lastName2: 'Smith', street2: '123 Main Street', city2: 'Raleigh', state2: 'NC',
+    email1: 'rsmith@yahoo.com', email2: 'rsmith@gmail.com', dob1: '1985-03-15', dob2: '1971-03-15',
+    phone1: '555-0101', phone2: '555-0102',
   },
-  'Person Moved': {
+  'Same Email, Diff Person': {
+    firstName1: 'Robert', lastName1: 'Smith', street1: '123 Main Street', city1: 'Raleigh', state1: 'NC',
+    firstName2: 'Maria', lastName2: 'Garcia', street2: '456 Oak Avenue', city2: 'Durham', state2: 'NC',
+    email1: 'shared@company.com', email2: 'shared@company.com',
+  },
+  'Person Moved + Phone Match': {
     firstName1: 'Robert', lastName1: 'Smith', street1: '123 Main Street', city1: 'New York', state1: 'NY',
     firstName2: 'Robert', lastName2: 'Smith', street2: '789 Oak Ave', city2: 'Los Angeles', state2: 'CA',
     phone1: '555-0101', phone2: '555-0101',
   },
-  'Name Reordered': {
-    firstName1: 'Robert', lastName1: 'Smith', street1: '123 Main Street', city1: 'Raleigh', state1: 'NC',
-    firstName2: 'Smith', lastName2: 'Robert', street2: '123 Main Street', city2: 'Raleigh', state2: 'NC',
-  },
-  'Address Abbreviation': {
-    firstName1: 'John', lastName1: 'Doe', street1: '123 Main Street', city1: 'Raleigh', state1: 'NC',
-    firstName2: 'John', lastName2: 'Doe', street2: '123 Main St', city2: 'Raleigh', state2: 'NC',
-    email1: 'jdoe@work.com', email2: 'jdoe@work.com', dob1: '1990-07-22', dob2: '1990-07-22',
-  },
-  'Non-ASCII Name': {
-    firstName1: 'Mohammad', lastName1: 'Al-Rashid', street1: '45 Desert Rd', city1: 'Dubai', state1: '',
-    firstName2: 'Mohammed', lastName2: 'Al Rashid', street2: '45 Desert Road', city2: 'Dubai', state2: '',
-  },
-  'Diff People Same Addr': {
-    firstName1: 'Robert', lastName1: 'Smith', street1: '123 Main Street', city1: 'Raleigh', state1: 'NC',
-    firstName2: 'James', lastName2: 'Wilson', street2: '123 Main Street', city2: 'Raleigh', state2: 'NC',
-  },
-  'Completely Different': {
+  'Different People': {
     firstName1: 'Robert', lastName1: 'Smith', street1: '123 Main Street', city1: 'Raleigh', state1: 'NC',
     firstName2: 'Maria', lastName2: 'Garcia', street2: '456 Oak Avenue', city2: 'Durham', state2: 'NC',
-  },
-  'DOB Confirmed Match': {
-    firstName1: 'Robert', lastName1: 'Smith', street1: '123 Main Street', city1: 'Raleigh', state1: 'NC',
-    firstName2: 'Bob', lastName2: 'Smith', street2: '123 Main St', city2: 'Raleigh', state2: 'NC',
-    email1: 'rsmith@gmail.com', email2: 'bobsmith@yahoo.com', dob1: '1985-03-15', dob2: '1985-03-15',
-    phone1: '555-0101', phone2: '555-0102',
-  },
-  'Email Match Override': {
-    firstName1: 'R.', lastName1: 'Smith', street1: '123 Main Street', city1: 'Raleigh', state1: 'NC',
-    firstName2: 'Robert', lastName2: 'Smith', street2: '200 Park Ave', city2: 'Boston', state2: 'MA',
-    email1: 'rsmith@gmail.com', email2: 'rsmith@gmail.com',
   },
 };
 
@@ -173,7 +152,6 @@ export default function Resolve() {
   const [result, setResult] = useState(null);
   const [attribution, setAttribution] = useState(null);
   const [rules, setRules] = useState(null);
-  const [finalProb, setFinalProb] = useState(null);
   const [loading, setLoading] = useState(false);
   const [latency, setLatency] = useState(0);
   const [error, setError] = useState(null);
@@ -188,36 +166,37 @@ export default function Resolve() {
   };
 
   const handleResolve = async () => {
-    setLoading(true); setResult(null); setAttribution(null); setRules(null); setFinalProb(null); setError(null);
+    setLoading(true); setResult(null); setAttribution(null); setRules(null); setError(null);
     const name1 = buildName(form.firstName1, form.lastName1);
     const addr1 = buildAddress(form.street1, form.city1, form.state1);
     const name2 = buildName(form.firstName2, form.lastName2);
     const addr2 = buildAddress(form.street2, form.city2, form.state2);
     const t0 = performance.now();
     try {
-      const { data } = await resolveEntities({ name1, address1: addr1, name2, address2: addr2 });
+      const { data } = await resolveEntities({
+        name1, address1: addr1, name2, address2: addr2,
+        dob1: form.dob1 || '', dob2: form.dob2 || '',
+        email1: form.email1 || '', email2: form.email2 || '',
+        phone1: form.phone1 || '', phone2: form.phone2 || '',
+      });
       setLatency(Math.round(performance.now() - t0));
       setResult(data);
-      const ruleResults = computeRules(form, data.probability);
+      const ruleResults = computeRules(form, data.deberta_raw || data.probability);
       setRules(ruleResults);
-      const dobRule = ruleResults.find(r => r.field === 'DOB');
-      const fp = dobRule?.override ? 1.0 : data.probability;
-      setFinalProb(fp);
       const attr = await computeAttribution(form, data.probability);
       setAttribution(attr);
-    } catch {
-      setError('Failed to resolve. Check that the API is running.');
+    } catch (e) {
+      setError(e.response?.data?.detail || 'Failed to resolve. Check that the API is running.');
     } finally {
       setLoading(false);
     }
   };
 
   const hasInput = form.firstName1 || form.lastName1 || form.firstName2 || form.lastName2;
-  const effectiveDecision = finalProb != null
-    ? (finalProb >= 0.45 ? 'MATCH' : finalProb >= 0.20 ? 'REVIEW' : 'NO-MATCH')
-    : result?.decision;
-  const score = (finalProb ?? result?.probability ?? 0) * 100;
-  const hasOverride = finalProb != null && finalProb !== result?.probability;
+  const effectiveDecision = result?.decision;
+  const score = (result?.probability ?? 0) * 100;
+  const debertaRaw = result?.deberta_raw ?? result?.probability ?? 0;
+  const hasOverride = result?.adjustments?.length > 0;
 
   return (
     <div className="page-container">
@@ -314,7 +293,7 @@ export default function Resolve() {
         {loading ? (
           <><Loader2 size={16} className="animate-spin" aria-hidden="true" /><span>Resolving...</span></>
         ) : (
-          <><Zap size={16} aria-hidden="true" /><span>Resolve entities</span></>
+          <><Zap size={16} aria-hidden="true" /><span>Compare</span></>
         )}
       </button>
 
@@ -357,14 +336,21 @@ export default function Resolve() {
                       {hasOverride && (
                         <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 border border-emerald-200 px-3 py-1 text-xs font-semibold text-emerald-700">
                           <Check size={12} aria-hidden="true" />
-                          DOB override
+                          Field rules applied
                         </span>
                       )}
                     </div>
                     {hasOverride && (
-                      <p className="mt-1 text-sm text-[var(--text-muted)]">
-                        Base semantic score: <span className="font-mono tabular-nums">{(result.probability * 100).toFixed(1)}%</span>
-                      </p>
+                      <div className="mt-1">
+                        <p className="text-sm text-[var(--text-muted)]">
+                          DeBERTa raw: <span className="font-mono tabular-nums">{(debertaRaw * 100).toFixed(1)}%</span>
+                        </p>
+                        <div className="mt-1.5 flex flex-wrap gap-1.5">
+                          {result.adjustments.map((adj, i) => (
+                            <span key={i} className="text-[10px] font-mono px-2 py-0.5 rounded bg-black/[0.04] text-[var(--text-muted)]">{adj}</span>
+                          ))}
+                        </div>
+                      </div>
                     )}
                   </div>
                   <DecisionBadge decision={effectiveDecision} confidence={result.confidence_level} />
