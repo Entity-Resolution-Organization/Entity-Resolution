@@ -18,8 +18,6 @@ Usage:
 """
 
 import argparse
-import os
-import sys
 
 import pandas as pd
 
@@ -336,7 +334,7 @@ def main():
 
     elif args.upload:
         from google.cloud import storage
-        gcs_path = f"to-process/demo_records.csv"
+        gcs_path = "to-process/demo_records.csv"
         client = storage.Client()
         client.bucket(args.bucket).blob(gcs_path).upload_from_string(
             df.to_csv(index=False), content_type="text/csv"
