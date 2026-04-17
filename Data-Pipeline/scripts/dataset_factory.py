@@ -195,7 +195,11 @@ class PseudopeopleHandler(DatasetHandler):
             }
         )
 
-        return df_normalized[["id", "name", "address", "dob"]]
+        # Keep dob for hard negative generation (same name, different DOB)
+        output_cols = ["id", "name", "address"]
+        if "dob" in df_normalized.columns:
+            output_cols.append("dob")
+        return df_normalized[output_cols]
 
 
 class NCVotersHandler(DatasetHandler):
@@ -311,7 +315,11 @@ class NCVotersHandler(DatasetHandler):
             }
         )
 
-        return df_normalized[["id", "name", "address", "dob"]]
+        # Keep dob (birth_year) for hard negative generation
+        output_cols = ["id", "name", "address"]
+        if "dob" in df_normalized.columns:
+            output_cols.append("dob")
+        return df_normalized[output_cols]
 
 
 class OFACHandler(DatasetHandler):

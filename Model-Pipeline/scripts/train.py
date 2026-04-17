@@ -162,7 +162,7 @@ class EntityResolutionTrainer:
 
         splits = {}
         for split in ["train", "val", "test"]:
-            blob_path  = f"{gcs_path}/{self.entity_type}/{split}.csv"
+            blob_path  = f"{gcs_path}/{split}.csv"
             local_path = os.path.join(local_dir, f"{self.entity_type}_{split}.csv")
             bucket.blob(blob_path).download_to_filename(local_path)
             splits[split] = pd.read_csv(local_path)
@@ -228,15 +228,18 @@ class EntityResolutionTrainer:
             return text_a, text_b
 
         def _tokenize(df: pd.DataFrame) -> Dataset:
-            pairs   = [_build_text_pair(row) for _, row in df.iterrows()]
-            texts_a = [p[0] for p in pairs]
-            texts_b = [p[1] for p in pairs]
+            texts_a = (
+                    "record_1 name: " + df[cols['name1']].fillna("[MISSING]").astype(str) +
+                    " address: " + df[cols['address1']].fillna("[MISSING]").astype(str)
+            )
+            texts_b = (
+                    "record_2 name: " + df[cols['name2']].fillna("[MISSING]").astype(str) +
+                    " address: " + df[cols['address2']].fillna("[MISSING]").astype(str)
+            )
 
-            # FIX 2 cont: pass text pair — tokenizer inserts real [SEP] tokens
-            # and sets attention_mask correctly for both segments.
             enc = tokenizer(
-                texts_a,
-                texts_b,
+                texts_a.tolist(),
+                texts_b.tolist(),
                 truncation=True,
                 padding="max_length",
                 max_length=max_length,
