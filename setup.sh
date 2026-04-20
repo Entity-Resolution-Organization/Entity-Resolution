@@ -26,11 +26,11 @@ GCP_PROJECT_ID=entity-resolution-487121
 GCP_BUCKET_NAME=entity-resolution-bucket-1
 GCP_REGION=us-central1
 MLFLOW_TRACKING_URI=$MLFLOW_URI
-USE_MOCK_CLIENT=false
-GOOGLE_APPLICATION_CREDENTIALS=/tmp/sa-key.json
+USE_MOCK_CLIENT=true
+GOOGLE_APPLICATION_CREDENTIALS=
 ENVEOF
 
-# Write MLflow URI to GCS for Cloud Run
+# Write MLflow URI to GCS
 echo "$MLFLOW_URI" | gcloud storage cp - gs://entity-resolution-bucket-1/config/mlflow_uri.txt
 
 # Start Model Pipeline services (MLflow)
