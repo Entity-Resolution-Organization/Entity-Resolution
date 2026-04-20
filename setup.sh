@@ -24,6 +24,7 @@ echo "MLflow URI: $MLFLOW_URI"
 
 echo "MLFLOW_TRACKING_URI=$MLFLOW_URI" >> Model-Pipeline/.env
 echo "MLFLOW_TRACKING_URI=$MLFLOW_URI" >> Monitoring-Pipeline/.env
+echo "AIRFLOW_VM_IP=$EXTERNAL_IP" >> Monitoring-Pipeline/.env
 
 # Create Inference Pipeline .env
 cat > Inference-Pipeline/.env << ENVEOF

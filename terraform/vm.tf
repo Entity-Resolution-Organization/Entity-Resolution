@@ -37,7 +37,7 @@ resource "google_compute_instance" "airflow_vm" {
       if [ ! -d "Entity-Resolution" ]; then
         git clone https://github.com/Entity-Resolution-Organization/Entity-Resolution.git
       fi
-      chmod -R 755 /opt/Entity-Resolution
+      chmod -R 777 /opt/Entity-Resolution
       cd /opt/Entity-Resolution
       bash setup.sh
     SCRIPT
