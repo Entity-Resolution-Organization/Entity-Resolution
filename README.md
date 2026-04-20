@@ -139,9 +139,6 @@ gcloud run deploy entity-resolution \
   --memory 2Gi --cpu 2 --timeout 600
 ```
 
-## Team
-
-Northeastern University — MLOps Spring 2026 — Group 13
 
 ---
 
@@ -197,3 +194,9 @@ Pushing to `main` or `dev` automatically triggers `.github/workflows/deploy.yml`
 gcloud compute ssh airflow-vm --zone=us-central1-a --project=entity-resolution-487121
 cd /home/ubuntu/Entity-Resolution && bash setup.sh
 ```
+
+---
+
+## Team
+
+Northeastern University — MLOps Spring 2026 — Group 13
