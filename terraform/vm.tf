@@ -108,3 +108,14 @@ resource "google_compute_firewall" "allow_custom_ui" {
   source_ranges = ["0.0.0.0/0"]
   target_tags   = ["entity-resolution"]
 }
+
+resource "google_compute_firewall" "allow_inference_api" {
+  name    = "allow-inference-api"
+  network = "default"
+  allow {
+    protocol = "tcp"
+    ports    = ["8000"]
+  }
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["entity-resolution"]
+}
