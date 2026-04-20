@@ -58,36 +58,6 @@ resource "google_compute_instance" "airflow_vm" {
   tags = ["entity-resolution"]
 }
 
-import {
-  to = google_compute_firewall.allow_ssh
-  id = "projects/${var.project_id}/global/firewalls/allow-ssh"
-}
-
-import {
-  to = google_compute_firewall.allow_airflow
-  id = "projects/${var.project_id}/global/firewalls/allow-airflow"
-}
-
-import {
-  to = google_compute_firewall.allow_mlflow
-  id = "projects/${var.project_id}/global/firewalls/allow-mlflow"
-}
-
-import {
-  to = google_compute_firewall.allow_grafana
-  id = "projects/${var.project_id}/global/firewalls/allow-grafana"
-}
-
-import {
-  to = google_compute_firewall.allow_custom_ui
-  id = "projects/${var.project_id}/global/firewalls/allow-custom-ui"
-}
-
-import {
-  to = google_compute_firewall.allow_inference_api
-  id = "projects/${var.project_id}/global/firewalls/allow-inference-api"
-}
-
 resource "google_compute_firewall" "allow_ssh" {
   name    = "allow-ssh"
   network = "default"
