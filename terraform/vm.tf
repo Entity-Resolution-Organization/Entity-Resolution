@@ -33,12 +33,12 @@ resource "google_compute_instance" "airflow_vm" {
       apt-get update -y && apt-get install -y google-cloud-cli
       systemctl enable docker
       systemctl start docker
-      usermod -aG docker ubuntu
-      cd /home/ubuntu
+      cd /opt
       if [ ! -d "Entity-Resolution" ]; then
         git clone https://github.com/Entity-Resolution-Organization/Entity-Resolution.git
       fi
-      cd Entity-Resolution
+      chmod -R 755 /opt/Entity-Resolution
+      cd /opt/Entity-Resolution
       bash setup.sh
     SCRIPT
   }

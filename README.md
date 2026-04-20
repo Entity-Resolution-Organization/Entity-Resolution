@@ -171,8 +171,8 @@ gcloud secrets versions add er-env-data       --data-file=Data-Pipeline/.env
 The VM runs `setup.sh` automatically on first boot — it pulls secrets, injects the MLflow URI, and starts all containers. If it fails (e.g. secrets weren't populated in time), SSH in and re-run manually:
 
 ```bash
-gcloud compute ssh ubuntu@production-vm --zone=us-central1-a
-cd /home/ubuntu/Entity-Resolution
+gcloud compute ssh production-vm --zone=us-central1-a
+cd /opt/Entity-Resolution
 bash setup.sh
 ```
 
@@ -191,8 +191,8 @@ Pushing to `main` or `dev` automatically triggers `.github/workflows/deploy.yml`
 ### Re-running After VM Restart
 
 ```bash
-gcloud compute ssh ubuntu@production-vm --zone=us-central1-a
-cd /home/ubuntu/Entity-Resolution && bash setup.sh
+gcloud compute ssh production-vm --zone=us-central1-a
+cd /opt/Entity-Resolution && bash setup.sh
 ```
 
 ---
