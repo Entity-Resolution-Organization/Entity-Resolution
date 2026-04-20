@@ -1,413 +1,190 @@
-# Entity Resolution — Deployment Guide
+# Resolv — Entity Resolution
 
-This document covers the full deployment process for the Dynamic Entity Resolution system on Google Cloud Platform (GCP), including infrastructure setup via Terraform, service deployment, monitoring, and CI/CD.
+ML system for PERSON entity resolution on Google Cloud Platform. Identifies and links records referring to the same real-world person across multiple data sources using DeBERTa-v3 + LoRA semantic matching, combined with a deterministic field-rule engine and graph-based contextual risk scoring.
+
+**Live demo:** [entity-resolution-756491711716.us-central1.run.app](https://entity-resolution-756491711716.us-central1.run.app)
+
+## Repository Structure
+
+```
+Entity-Resolution/
+├── Data-Pipeline/              # Airflow data processing pipeline
+│   ├── dags/                   # DAG definitions
+│   ├── scripts/                # Processing modules
+│   ├── tests/                  # Unit tests
+│   ├── config/                 # Dataset configuration
+│   └── data/                   # Pipeline outputs (DVC tracked)
+├── Model-Pipeline/             # DeBERTa-v3 + LoRA training on Vertex AI
+│   ├── config/                 # Training + inference config (YAML)
+│   ├── scripts/                # Training, evaluation, deployment scripts
+│   └── notebooks/              # Exploration notebooks
+├── Inference-Pipeline/         # FastAPI backend + React frontend
+│   ├── scripts/                # Backend (app.py, build_graph, write_clusters, score_network)
+│   ├── frontend/               # React 19 + Vite + Tailwind v4
+│   ├── config/                 # Inference configuration
+│   ├── dags/                   # Inference Airflow DAG
+│   ├── Dockerfile              # Multi-stage build for Cloud Run
+│   └── requirements.txt
+├── Initial_Setup/              # GCP infrastructure (Terraform)
+└── README.md
+```
+
+## Pipeline Overview
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────────────────┐
+│  Data Pipeline   │     │  Model Pipeline  │     │     Inference Pipeline       │
+│                  │     │                  │     │                             │
+│ 3 Datasets       │────▶│ DeBERTa-v3+LoRA │────▶│ Blocking → Scoring → Rules  │
+│ 450K accounts    │     │ Vertex AI Train  │     │ → Clustering → Risk Scoring │
+│ 240K pairs       │     │ MLflow Tracking  │     │ → Customer 360, KYC, Fraud  │
+│ DVC + Airflow    │     │ Quality Gates    │     │ FastAPI + React on Cloud Run│
+└─────────────────┘     └─────────────────┘     └─────────────────────────────┘
+```
+
+## How It Works
+
+### 1. Data Pipeline (Airflow + DVC)
+- Ingests 3 PERSON datasets: Pseudopeople (synthetic), NC Voter Registry (real), OFAC SDN List (sanctions)
+- 450K accounts → 240K balanced training pairs (50/50 positive/negative)
+- Validates with Great Expectations, detects bias, versions with DVC, uploads to GCS
+- Quality gate: schema validation, bias detection, split validation
+
+### 2. Model Pipeline (Vertex AI + MLflow)
+- **Base model**: DeBERTa-v3-base (220M params, disentangled attention)
+- **Fine-tuning**: LoRA adapters (rank=8, alpha=16) — trains only ~0.3% of parameters
+- **Training**: 3 epochs, batch size 32, learning rate 2e-5, AdamW
+- **Performance**: 98.6% accuracy, 98.4% precision, 98.8% recall, 99.8% AUC on 27K test samples
+- **Quality gate**: F1 >= 0.75, precision >= 0.70, recall >= 0.70, AUC >= 0.80
+
+### 3. Inference Pipeline (FastAPI + React)
+
+**Graph construction:**
+1. **Blocking** — 7 keys per record (name prefix, surname, DOB year, email user, phone suffix, street number, postal code) reduce N² to ~O(N log N)
+2. **DeBERTa scoring** — Vertex AI online endpoint scores candidate pairs
+3. **Field rules** — DOB mismatch vetoes (cap at 0.10), email/phone/DOB match boosts (+0.10 to +0.20)
+4. **Transitive closure** — connected components clustering at 0.45 threshold
+5. **Contextual risk scoring** — cluster_risk (30%), bad_neighbour (40%), shared_field (20%), centrality (10%)
+
+**Product features:**
+
+| Feature | Description |
+|---------|-------------|
+| Pairwise Match | Compare two records with DeBERTa + field rules, see field-level attribution |
+| Batch Unify | Upload CSV → pipeline → download unified CSV with cluster IDs |
+| Customer 360 | Search by name → unified golden record from all source systems |
+| KYC Screening | OFAC alerts with 1-hop and 2-hop risk paths, investigation graph |
+| Fraud Detection | Cross-cluster shared email/phone/company anomalies |
+| Cluster Explorer | Visualize transitive closure, direct vs transitive edges |
+| Analytics | Pipeline metrics, model performance, bias reports |
+
+## Tech Stack
+
+| Component | Technology |
+|-----------|-----------|
+| ML Model | DeBERTa-v3-base + LoRA (HuggingFace Transformers + PEFT) |
+| Training | Vertex AI Pipelines, T4 GPU |
+| Experiment Tracking | MLflow |
+| Data Versioning | DVC 3.x + GCS remote |
+| Orchestration | Apache Airflow 2.8.1 |
+| Model Serving | Vertex AI Online Endpoint (1-3 replicas) |
+| Backend | FastAPI, Python 3.10 |
+| Frontend | React 19, Vite 8, Tailwind CSS v4, Framer Motion |
+| Storage | Google Cloud Storage, BigQuery |
+| Deployment | Cloud Run (single container: API + static frontend) |
+| Infrastructure | Terraform, GCP |
+
+## Getting Started
+
+### Prerequisites
+- GCP project with Vertex AI, BigQuery, Cloud Storage, Cloud Run enabled
+- Python 3.10+, Node.js 20+
+- Docker
+
+### 1. Infrastructure
+Provision GCP resources using Terraform. See [Initial_Setup/](Initial_Setup/)
+
+### 2. Data Pipeline
+```bash
+cd Data-Pipeline
+cp .env.example .env
+docker compose up -d
+docker exec data-pipeline-airflow-scheduler-1 airflow dags trigger er_data_pipeline
+```
+
+### 3. Model Training
+```bash
+cd Model-Pipeline
+pip install -r requirements.txt
+python scripts/train.py --config config/training_config.yaml
+```
+
+### 4. Inference Pipeline (local)
+```bash
+cd Inference-Pipeline
+pip install -r requirements.txt
+cd frontend && npm ci && npm run build && cd ..
+GCP_BUCKET_NAME=<bucket> CONFIG_PATH=../Model-Pipeline/config/training_config.yaml \
+  USE_MOCK_CLIENT=false uvicorn scripts.app:app --host 0.0.0.0 --port 8000
+```
+
+### 5. Deploy to Cloud Run
+```bash
+cd Inference-Pipeline
+docker build --platform linux/amd64 -t gcr.io/<project>/entity-resolution-inference .
+docker push gcr.io/<project>/entity-resolution-inference
+gcloud run deploy entity-resolution \
+  --image gcr.io/<project>/entity-resolution-inference \
+  --region us-central1 --allow-unauthenticated \
+  --memory 2Gi --cpu 2 --timeout 600
+```
+
+## Team
+
+Northeastern University — MLOps Spring 2026 — Group 13
 
 ---
 
-## Table of Contents
+## Deployment
 
-1. [Architecture Overview](#architecture-overview)
-2. [Prerequisites](#prerequisites)
-3. [Environment Setup](#environment-setup)
-4. [Secrets Configuration](#secrets-configuration)
-5. [Infrastructure Provisioning (Terraform)](#infrastructure-provisioning-terraform)
-6. [Running the Deployment Script](#running-the-deployment-script)
-7. [Deploying the Inference API (Cloud Run)](#deploying-the-inference-api-cloud-run)
-8. [Running the ML Pipelines](#running-the-ml-pipelines)
-9. [Model Monitoring with Grafana](#model-monitoring-with-grafana)
-10. [CI/CD Pipeline (GitHub Actions)](#cicd-pipeline-github-actions)
-11. [Verifying the Deployment](#verifying-the-deployment)
-12. [Re-running After VM Restart](#re-running-after-vm-restart)
-13. [Teardown](#teardown)
-14. [Troubleshooting](#troubleshooting)
+For full deployment instructions including Terraform setup, environment configuration, running services, monitoring, and CI/CD — see the [Deployment Guide](terraform/README.md) or refer to the sections below.
 
----
-
-## Architecture Overview
-
-The deployment runs entirely on **Google Cloud Platform (GCP)**:
-
-| Component | GCP Service | Purpose |
-|---|---|---|
-| MLflow Tracking | Compute Engine VM (`airflow-vm`) | Experiment tracking and model registry |
-| Inference API + UI | Compute Engine VM (`airflow-vm`) | FastAPI backend + frontend on port 8000 |
-| Grafana Monitoring | Compute Engine VM (`airflow-vm`) | Model performance and drift dashboards |
-| Model Training | Vertex AI Pipelines | DeBERTa + GNN training |
-| Data Storage | GCS (`entity-resolution-bucket-1`) | Artifacts, configs, raw/processed data |
-| Prediction Logs | BigQuery (`entity_resolution` dataset) | Inference logging and monitoring |
-| Container Registry | Artifact Registry (`ml-models`) | Docker image storage |
-| Secrets | Secret Manager | Secure `.env` file storage |
-
----
-
-## Prerequisites
-
-### Required Tools
-
-Install the following before starting:
-
-- [gcloud CLI](https://cloud.google.com/sdk/docs/install)
-- [Terraform](https://developer.hashicorp.com/terraform/install) (>= v1.3)
-- [Docker](https://docs.docker.com/get-docker/)
-- `git`
-
-### Authentication
+### Quick Start (Fresh Environment)
 
 ```bash
+# 1. Clone and switch to deployment branch
+git clone https://github.com/Entity-Resolution-Organization/Entity-Resolution.git
+cd Entity-Resolution
+git checkout deployment
+
+# 2. Authenticate with GCP
 gcloud auth login
 gcloud auth application-default login
 gcloud config set project entity-resolution-487121
 
-gcloud services enable \
-  compute.googleapis.com \
-  aiplatform.googleapis.com \
-  bigquery.googleapis.com \
-  artifactregistry.googleapis.com \
-  cloudbuild.googleapis.com \
-  secretmanager.googleapis.com \
-  run.googleapis.com \
-  --project=entity-resolution-487121
+# 3. Create .env files (see .env.example in each pipeline folder)
+
+# 4. Upload secrets
+gcloud secrets create er-env-model --data-file=Model-Pipeline/.env --project=entity-resolution-487121
+gcloud secrets create er-env-monitoring --data-file=Monitoring-Pipeline/.env --project=entity-resolution-487121
+gcloud secrets create er-env-data --data-file=Data-Pipeline/.env --project=entity-resolution-487121
+
+# 5. Provision infrastructure
+cd terraform && terraform init && terraform apply
+
+# 6. SSH into VM and start services
+gcloud compute ssh airflow-vm --zone=us-central1-a --project=entity-resolution-487121
+cd /home/ubuntu/Entity-Resolution && bash setup.sh
 ```
 
----
-
-## Environment Setup
-
-### Step 1 — Clone the Repository
-
-```bash
-git clone https://github.com/Entity-Resolution-Organization/Entity-Resolution.git
-cd Entity-Resolution
-git checkout deployment
-```
-
-### Step 2 — Create `.env` Files Locally
-
-**`Model-Pipeline/.env`**
-```
-GCS_ARTIFACT_ROOT=gs://entity-resolution-bucket-1/mlflow-artifacts
-GCP_PROJECT_ID=entity-resolution-487121
-GCP_REGION=us-central1
-MODEL_VERSION=v1
-GCS_BUCKET=entity-resolution-bucket-1
-```
-
-**`Monitoring-Pipeline/.env`**
-```
-GCP_PROJECT_ID=entity-resolution-487121
-GCP_REGION=us-central1
-BQ_DATASET=entity_resolution
-BQ_TABLE=prediction_logs
-ENABLE_PREDICTION_LOG=true
-```
-
-**`Data-Pipeline/.env`**
-```
-GCP_PROJECT_ID=entity-resolution-487121
-GCP_REGION=us-central1
-GCS_BUCKET=entity-resolution-bucket-1
-```
-
-> ⚠️ Never commit `.env` files — they are listed in `.gitignore`.
-
----
-
-## Secrets Configuration
-
-### Step 3 — Upload `.env` Files to Secret Manager
-
-```bash
-gcloud secrets create er-env-model \
-  --data-file=Model-Pipeline/.env \
-  --project=entity-resolution-487121
-
-gcloud secrets create er-env-monitoring \
-  --data-file=Monitoring-Pipeline/.env \
-  --project=entity-resolution-487121
-
-gcloud secrets create er-env-data \
-  --data-file=Data-Pipeline/.env \
-  --project=entity-resolution-487121
-```
-
-To update an existing secret:
-```bash
-gcloud secrets versions add er-env-model --data-file=Model-Pipeline/.env
-```
-
----
-
-## Infrastructure Provisioning (Terraform)
-
-### Step 4 — Run Terraform
-
-```bash
-cd terraform/
-terraform init
-terraform plan
-terraform apply    # type 'yes' when prompted
-```
-
-This creates:
-- `airflow-vm` (Compute Engine) — runs MLflow, Inference API, Grafana
-- `entity-resolution-bucket-1` + staging bucket (GCS)
-- `entity_resolution` dataset (BigQuery)
-- `ml-models` repository (Artifact Registry)
-- `airflow-sa` and `vertex-trainer` service accounts with IAM roles
-- Secret Manager secrets
-- Firewall rules for ports 22, 5000, 8000, 8080, 3000, 8501
-
-Note the outputs:
-```bash
-terraform output vm_external_ip   # e.g. 34.72.173.207
-```
-
----
-
-## Running the Deployment Script
-
-### Step 5 — SSH into the VM and Run setup.sh
-
-```bash
-gcloud compute ssh airflow-vm \
-  --zone=us-central1-a \
-  --project=entity-resolution-487121
-```
-
-Once inside:
-```bash
-cd /home/ubuntu/Entity-Resolution
-git pull origin deployment
-bash setup.sh
-```
-
-`setup.sh` does the following automatically:
-1. Pulls `.env` files from Secret Manager
-2. Configures Docker auth for Artifact Registry
-3. Injects `MLFLOW_TRACKING_URI` using the VM's external IP
-4. Writes the MLflow URI to GCS for Cloud Run
-5. Starts MLflow (port 5000) via Docker Compose
-6. Starts the Inference API (port 8000) via Docker
-
-Verify containers are running:
-```bash
-sudo docker ps
-```
-
----
-
-## Deploying the Inference API (Cloud Run)
-
-To deploy a new version of the Inference API to Cloud Run:
-
-```bash
-# Build and push image
-docker build \
-  -t us-central1-docker.pkg.dev/entity-resolution-487121/ml-models/er-inference-api:latest \
-  ./Inference-Pipeline
-
-docker push \
-  us-central1-docker.pkg.dev/entity-resolution-487121/ml-models/er-inference-api:latest
-
-# Deploy
-gcloud run deploy er-inference-api \
-  --image=us-central1-docker.pkg.dev/entity-resolution-487121/ml-models/er-inference-api:latest \
-  --region=us-central1 \
-  --project=entity-resolution-487121 \
-  --set-env-vars="GCP_PROJECT_ID=entity-resolution-487121,GCP_REGION=us-central1" \
-  --service-account=vertex-trainer@entity-resolution-487121.iam.gserviceaccount.com \
-  --allow-unauthenticated
-```
-
----
-
-## Running the ML Pipelines
-
-### DeBERTa Training Pipeline (Stage 1)
-
-```bash
-cd Model-Pipeline
-sudo docker-compose run --rm trainer python pipeline.py --run
-```
-
-On completion, endpoint info is written to:
-```
-gs://entity-resolution-bucket-1/pipeline-results/endpoint_info.json
-```
-
-### GNN Pipeline (Stage 2)
-
-```bash
-sudo docker-compose run --rm trainer python scripts/gnn/build_graph.py
-
-sudo docker-compose run --rm trainer bash -c "
-  JOB_SUFFIX=train ENTITY_TYPE=person python scripts/gnn/write_clusters.py"
-
-sudo docker-compose run --rm trainer bash -c "
-  JOB_SUFFIX=train ENTITY_TYPE=person python scripts/gnn/score_network.py"
-```
-
----
-
-## Model Monitoring with Grafana
-
-Grafana runs on the VM at port 3000 and is connected to BigQuery for real-time model monitoring.
-
-### Starting Grafana
-
-```bash
-sudo systemctl start grafana-server
-sudo systemctl enable grafana-server
-```
-
-### Accessing the Dashboard
-
-Open `http://<VM_EXTERNAL_IP>:3000` in your browser.
-- Default login: `admin` / `admin123`
-
-The dashboard includes:
-- **Data Drift Over Time** — drift scores per feature
-- **Model Performance Over Time** — F1, precision, recall trends
-- **Prediction Confidence Over Time** — probability and latency
-- **Current Model Metrics** — latest F1, precision, recall values
-
-### Setting Up BigQuery Data Source (First Time Only)
-
-1. Go to **Connections → Data sources → Add new data source**
-2. Search for **BigQuery** and select it
-3. Under Authentication select **Google JWT File**
-4. Upload the service account key JSON file
-5. Set **Processing Location** to `US`
-6. Click **Save & Test**
-
-### Importing the Dashboard (First Time Only)
-
-1. Go to **Dashboards → New → Import**
-2. Upload `Monitoring-Pipeline/grafana/er-monitoring-dashboard.json`
-3. Select the BigQuery data source when prompted
-
-### Running the Monitoring Pipeline
-
-```bash
-cd Monitoring-Pipeline
-python monitoring_pipeline.py --run
-```
-
-This evaluates the model, detects data drift, logs metrics to BigQuery, and sends Slack alerts if retraining is needed.
-
----
-
-## CI/CD Pipeline (GitHub Actions)
-
-The `.github/workflows/deploy.yml` workflow automatically triggers on every push to `main` or `dev`. It:
-
-1. Authenticates to GCP using the `GCP_SA_KEY` secret
-2. Builds and pushes the Inference API Docker image to Artifact Registry
-3. Deploys the updated image to Cloud Run
-4. SSHs into the VM and reruns `setup.sh` to pull latest code and restart services
-
-Required GitHub secrets (already configured in the repo):
-- `GCP_SA_KEY` — service account key JSON
-- `GCP_PROJECT_ID` — `entity-resolution-487121`
-- `GCP_REGION` — `us-central1`
-- `GCP_BUCKET_NAME` — `entity-resolution-bucket-1`
-- `GCP_SA_EMAIL` — service account email
-- `MLFLOW_TRACKING_URI` — MLflow tracking URL
-
----
-
-## Verifying the Deployment
-
-Once everything is running, verify each service:
+### Running Services
 
 | Service | URL |
 |---|---|
-| MLflow | `http://<VM_EXTERNAL_IP>:5000` |
-| Inference API + UI | `http://<VM_EXTERNAL_IP>:8000` |
-| Grafana | `http://<VM_EXTERNAL_IP>:3000` |
-| Vertex AI Pipelines | https://console.cloud.google.com/vertex-ai/pipelines?project=entity-resolution-487121 |
-| BigQuery | https://console.cloud.google.com/bigquery?project=entity-resolution-487121 |
+| MLflow | `http://<VM_IP>:5000` |
+| Inference API + UI | `http://<VM_IP>:8000` |
+| Grafana Monitoring | `http://<VM_IP>:3000` |
 
-Test the inference endpoint:
-```bash
-curl -X POST http://<VM_EXTERNAL_IP>:8000/api/match \
-  -H "Content-Type: application/json" \
-  -d '{"name1": "John Doe", "name2": "J. Doe"}'
-```
+### CI/CD
 
----
-
-## Re-running After VM Restart
-
-> VM restarts change the external IP — MLflow URI becomes stale.
-
-```bash
-gcloud compute ssh airflow-vm --zone=us-central1-a --project=entity-resolution-487121
-cd /home/ubuntu/Entity-Resolution
-bash setup.sh
-```
-
----
-
-## Teardown
-
-> ⚠️ This permanently deletes all GCS data and BigQuery tables. Back up first.
-
-```bash
-# Stop services on VM
-sudo docker stop $(sudo docker ps -q)
-
-# Destroy all GCP resources
-cd terraform/
-terraform destroy
-```
-
----
-
-## Troubleshooting
-
-**Containers not starting:**
-```bash
-sudo docker ps
-sudo docker logs <container_name> --tail=30
-```
-
-**MLflow not reachable:**
-```bash
-bash setup.sh   # refreshes URI and restarts services
-```
-
-**Grafana can't connect to BigQuery:**
-```bash
-# Re-upload the service account key in Grafana data source settings
-```
-
-**Inference API unhealthy:**
-```bash
-sudo docker logs inference-api --tail=30
-```
-
----
-
-## Quick Reference
-
-```bash
-# SSH into VM
-gcloud compute ssh airflow-vm --zone=us-central1-a --project=entity-resolution-487121
-
-# Restart all services
-bash setup.sh
-
-# View running containers
-sudo docker ps
-
-# View logs
-sudo docker logs inference-api --tail=30
-sudo docker logs model-pipeline-mlflow-1 --tail=30
-
-# Update a secret
-gcloud secrets versions add er-env-model --data-file=Model-Pipeline/.env
-
-# Run monitoring pipeline manually
-cd Monitoring-Pipeline && python monitoring_pipeline.py --run
-```
+Pushing to `main` or `dev` automatically triggers the GitHub Actions workflow (`.github/workflows/deploy.yml`) which builds and redeploys the Inference API to Cloud Run.
