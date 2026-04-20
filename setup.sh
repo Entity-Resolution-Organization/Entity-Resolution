@@ -12,8 +12,13 @@ gcloud secrets versions access latest --secret=er-env-data > Data-Pipeline/.env
 # Configure Docker auth for Artifact Registry
 gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
-# Use hardcoded external IP (update this if VM IP changes)
-EXTERNAL_IP="34.72.173.207"
+# Fetch this VM's external IP from GCP instance metadata
+EXTERNAL_IP=$(curl -sf -H "Metadata-Flavor: Google" \
+  "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip")
+if [ -z "$EXTERNAL_IP" ]; then
+  echo "ERROR: Could not fetch external IP from metadata server" >&2
+  exit 1
+fi
 MLFLOW_URI="http://$EXTERNAL_IP:5000"
 echo "MLflow URI: $MLFLOW_URI"
 

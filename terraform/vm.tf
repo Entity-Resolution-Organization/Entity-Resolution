@@ -1,5 +1,5 @@
 resource "google_compute_instance" "airflow_vm" {
-  name         = "airflow-vm"
+  name         = "production-vm"
   machine_type = "e2-standard-4"
   zone         = var.zone
 
@@ -26,7 +26,11 @@ resource "google_compute_instance" "airflow_vm" {
       #!/bin/bash
       set -e
       apt-get update -y
-      apt-get install -y docker.io docker-compose git curl
+      apt-get install -y docker.io docker-compose git curl apt-transport-https ca-certificates gnupg
+      # Install gcloud CLI
+      curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+      echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" > /etc/apt/sources.list.d/google-cloud-sdk.list
+      apt-get update -y && apt-get install -y google-cloud-cli
       systemctl enable docker
       systemctl start docker
       usermod -aG docker ubuntu
@@ -52,6 +56,36 @@ resource "google_compute_instance" "airflow_vm" {
   }
 
   tags = ["entity-resolution"]
+}
+
+import {
+  to = google_compute_firewall.allow_ssh
+  id = "projects/${var.project_id}/global/firewalls/allow-ssh"
+}
+
+import {
+  to = google_compute_firewall.allow_airflow
+  id = "projects/${var.project_id}/global/firewalls/allow-airflow"
+}
+
+import {
+  to = google_compute_firewall.allow_mlflow
+  id = "projects/${var.project_id}/global/firewalls/allow-mlflow"
+}
+
+import {
+  to = google_compute_firewall.allow_grafana
+  id = "projects/${var.project_id}/global/firewalls/allow-grafana"
+}
+
+import {
+  to = google_compute_firewall.allow_custom_ui
+  id = "projects/${var.project_id}/global/firewalls/allow-custom-ui"
+}
+
+import {
+  to = google_compute_firewall.allow_inference_api
+  id = "projects/${var.project_id}/global/firewalls/allow-inference-api"
 }
 
 resource "google_compute_firewall" "allow_ssh" {

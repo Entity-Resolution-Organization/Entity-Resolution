@@ -161,17 +161,17 @@ This creates the VM, GCS buckets, BigQuery dataset, Artifact Registry, Secret Ma
 Create `.env` files in each pipeline folder based on the `.env.example` templates, then upload to Secret Manager:
 
 ```bash
-gcloud secrets create er-env-model --data-file=Model-Pipeline/.env --project=entity-resolution-487121
-gcloud secrets create er-env-monitoring --data-file=Monitoring-Pipeline/.env --project=entity-resolution-487121
-gcloud secrets create er-env-data --data-file=Data-Pipeline/.env --project=entity-resolution-487121
+gcloud secrets versions add er-env-model      --data-file=Model-Pipeline/.env
+gcloud secrets versions add er-env-monitoring --data-file=Monitoring-Pipeline/.env
+gcloud secrets versions add er-env-data       --data-file=Data-Pipeline/.env
 ```
 
 ### Starting All Services
 
-SSH into the VM and run the setup script — it pulls secrets, injects the MLflow URI, and starts all containers automatically:
+The VM runs `setup.sh` automatically on first boot — it pulls secrets, injects the MLflow URI, and starts all containers. If it fails (e.g. secrets weren't populated in time), SSH in and re-run manually:
 
 ```bash
-gcloud compute ssh airflow-vm --zone=us-central1-a --project=entity-resolution-487121
+gcloud compute ssh ubuntu@production-vm --zone=us-central1-a
 cd /home/ubuntu/Entity-Resolution
 bash setup.sh
 ```
@@ -191,7 +191,7 @@ Pushing to `main` or `dev` automatically triggers `.github/workflows/deploy.yml`
 ### Re-running After VM Restart
 
 ```bash
-gcloud compute ssh airflow-vm --zone=us-central1-a --project=entity-resolution-487121
+gcloud compute ssh ubuntu@production-vm --zone=us-central1-a
 cd /home/ubuntu/Entity-Resolution && bash setup.sh
 ```
 

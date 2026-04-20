@@ -1,3 +1,23 @@
+import {
+  to = google_storage_bucket.main_bucket
+  id = "entity-resolution-bucket-1"
+}
+
+import {
+  to = google_storage_bucket.staging_bucket
+  id = "entity-resolution-staging-bucket"
+}
+
+import {
+  to = google_storage_bucket.data_bucket
+  id = "entity-resolution-data-bucket"
+}
+
+import {
+  to = google_storage_bucket.dvc_bucket
+  id = "entity-resolution-dvc-bucket"
+}
+
 resource "google_storage_bucket" "main_bucket" {
   name          = var.bucket_name
   location      = "US"

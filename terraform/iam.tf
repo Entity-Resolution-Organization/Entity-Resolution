@@ -1,3 +1,13 @@
+import {
+  to = google_service_account.airflow_sa
+  id = "projects/${var.project_id}/serviceAccounts/airflow-sa@${var.project_id}.iam.gserviceaccount.com"
+}
+
+import {
+  to = google_service_account.vertex_trainer_sa
+  id = "projects/${var.project_id}/serviceAccounts/vertex-trainer@${var.project_id}.iam.gserviceaccount.com"
+}
+
 resource "google_service_account" "airflow_sa" {
   account_id   = "airflow-sa"
   display_name = "Entity Resolution Service Account"
