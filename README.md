@@ -145,39 +145,41 @@ Northeastern University — MLOps Spring 2026 — Group 13
 
 ---
 
-## Deployment
+## Deployment Guide
 
-For full deployment instructions including Terraform setup, environment configuration, running services, monitoring, and CI/CD — see the [Deployment Guide](terraform/README.md) or refer to the sections below.
+### Infrastructure Setup (Terraform)
 
-### Quick Start (Fresh Environment)
+All GCP infrastructure is defined in the `terraform/` folder. To provision from scratch:
 
 ```bash
-# 1. Clone and switch to deployment branch
-git clone https://github.com/Entity-Resolution-Organization/Entity-Resolution.git
-cd Entity-Resolution
-git checkout deployment
+cd terraform/
+terraform init
+terraform apply
+```
 
-# 2. Authenticate with GCP
-gcloud auth login
-gcloud auth application-default login
-gcloud config set project entity-resolution-487121
+This creates the VM, GCS buckets, BigQuery dataset, Artifact Registry, Secret Manager secrets, and all firewall rules.
 
-# 3. Create .env files (see .env.example in each pipeline folder)
+### Environment Configuration
 
-# 4. Upload secrets
+Create `.env` files in each pipeline folder based on the `.env.example` templates, then upload to Secret Manager:
+
+```bash
 gcloud secrets create er-env-model --data-file=Model-Pipeline/.env --project=entity-resolution-487121
 gcloud secrets create er-env-monitoring --data-file=Monitoring-Pipeline/.env --project=entity-resolution-487121
 gcloud secrets create er-env-data --data-file=Data-Pipeline/.env --project=entity-resolution-487121
-
-# 5. Provision infrastructure
-cd terraform && terraform init && terraform apply
-
-# 6. SSH into VM and start services
-gcloud compute ssh airflow-vm --zone=us-central1-a --project=entity-resolution-487121
-cd /home/ubuntu/Entity-Resolution && bash setup.sh
 ```
 
-### Running Services
+### Starting All Services
+
+SSH into the VM and run the setup script — it pulls secrets, injects the MLflow URI, and starts all containers automatically:
+
+```bash
+gcloud compute ssh airflow-vm --zone=us-central1-a --project=entity-resolution-487121
+cd /home/ubuntu/Entity-Resolution
+bash setup.sh
+```
+
+### Service URLs
 
 | Service | URL |
 |---|---|
@@ -187,4 +189,11 @@ cd /home/ubuntu/Entity-Resolution && bash setup.sh
 
 ### CI/CD
 
-Pushing to `main` or `dev` automatically triggers the GitHub Actions workflow (`.github/workflows/deploy.yml`) which builds and redeploys the Inference API to Cloud Run.
+Pushing to `main` or `dev` automatically triggers `.github/workflows/deploy.yml` which builds the Inference API image, pushes it to Artifact Registry, and redeploys to Cloud Run.
+
+### Re-running After VM Restart
+
+```bash
+gcloud compute ssh airflow-vm --zone=us-central1-a --project=entity-resolution-487121
+cd /home/ubuntu/Entity-Resolution && bash setup.sh
+```
