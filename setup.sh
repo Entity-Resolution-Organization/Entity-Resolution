@@ -13,7 +13,7 @@ gcloud secrets versions access latest --secret=er-env-data > Data-Pipeline/.env
 gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
 # Get VM external IP and inject MLflow URI
-EXTERNAL_IP=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/externalIp" -H "Metadata-Flavor: Google")
+EXTERNAL_IP=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/externalIp")
 MLFLOW_URI="http://$EXTERNAL_IP:5000"
 echo "MLflow URI: $MLFLOW_URI"
 
@@ -26,16 +26,15 @@ echo "$MLFLOW_URI" | gcloud storage cp - gs://entity-resolution-bucket-1/config/
 # Start Model Pipeline services (MLflow + trainer)
 echo "Starting Model Pipeline..."
 cd Model-Pipeline
-sudo docker compose up -d mlflow
+sudo docker-compose up -d mlflow
 cd ..
 
 # Start Inference Pipeline services
 echo "Starting Inference Pipeline..."
 cd Inference-Pipeline
-sudo docker compose up -d
+sudo docker-compose up -d
 cd ..
 
 echo "=== Setup Complete ==="
 echo "MLflow:   $MLFLOW_URI"
-echo "Airflow:  http://$EXTERNAL_IP:8080"
 echo "UI:       http://$EXTERNAL_IP:8501"
