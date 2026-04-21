@@ -45,9 +45,9 @@ jobs:
       #       --service-account=vertex-trainer@entity-resolution-487121.iam.gserviceaccount.com \
       #       --allow-unauthenticated
 
-      - name: Restart services on VM
-        run: |
-          gcloud compute ssh production-vm \
-            --zone=us-central1-a \
-            --project=entity-resolution-487121 \
-            --command="cd /opt/Entity-Resolution && git pull origin ${{ github.ref_name }} && bash setup.sh"
+      # - name: Restart services on VM
+      #   run: |
+      #     gcloud compute ssh production-vm \
+      #       --zone=us-central1-a \
+      #       --project=entity-resolution-487121 \
+      #       --command="cd /opt/Entity-Resolution && git pull origin ${{ github.ref_name }} && bash setup.sh"
