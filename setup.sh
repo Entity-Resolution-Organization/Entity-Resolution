@@ -39,6 +39,12 @@ ENVEOF
 # Write MLflow URI to GCS
 echo "$MLFLOW_URI" | gcloud storage cp - gs://entity-resolution-bucket-1/config/mlflow_uri.txt
 
+# Start Data Pipeline services (Airflow UI only — DAGs are triggered manually)
+echo "Starting Data Pipeline..."
+cd Data-Pipeline
+sudo docker-compose up -d
+cd ..
+
 # Start Model Pipeline services (MLflow)
 echo "Starting Model Pipeline..."
 cd Model-Pipeline
@@ -49,6 +55,12 @@ cd ..
 echo "Starting Inference Pipeline..."
 cd Inference-Pipeline
 sudo docker-compose up -d inference-api inference-ui
+cd ..
+
+# Start Monitoring Pipeline services (Grafana)
+echo "Starting Monitoring Pipeline..."
+cd Monitoring-Pipeline
+sudo docker-compose up -d grafana
 cd ..
 
 echo "=== Setup Complete ==="
