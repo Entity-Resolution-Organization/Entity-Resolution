@@ -50,4 +50,4 @@ jobs:
           gcloud compute ssh production-vm \
             --zone=us-central1-a \
             --project=entity-resolution-487121 \
-            --command="cd /home/ubuntu/Entity-Resolution && git pull origin main && bash setup.sh"
+            --command="cd /opt/Entity-Resolution && git pull origin ${{ github.ref_name }} && bash setup.sh"
