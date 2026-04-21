@@ -58,6 +58,12 @@ resource "google_project_iam_member" "vertex_artifact_registry" {
   member  = "serviceAccount:${google_service_account.vertex_trainer_sa.email}"
 }
 
+resource "google_project_iam_member" "vertex_run_admin" {
+  project = var.project_id
+  role    = "roles/run.admin"
+  member  = "serviceAccount:${google_service_account.vertex_trainer_sa.email}"
+}
+
 resource "google_service_account_iam_member" "sa_owner" {
   service_account_id = google_service_account.airflow_sa.name
   role               = "roles/owner"
