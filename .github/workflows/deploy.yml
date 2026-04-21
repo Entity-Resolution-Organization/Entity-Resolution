@@ -12,17 +12,15 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Authenticate to GCP
-        uses: google-github-actions/auth@v1
+        uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@v1
-        with:
-          project_id: entity-resolution-487121
+        uses: google-github-actions/setup-gcloud@v2
 
       - name: Configure Docker
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
@@ -35,19 +33,26 @@ jobs:
           docker push \
             us-central1-docker.pkg.dev/entity-resolution-487121/ml-models/er-inference-api:latest
 
-      # - name: Deploy to Cloud Run
-      #   run: |
-      #     gcloud run deploy er-inference-api \
-      #       --image=us-central1-docker.pkg.dev/entity-resolution-487121/ml-models/er-inference-api:latest \
-      #       --region=us-central1 \
-      #       --project=entity-resolution-487121 \
-      #       --set-env-vars="GCP_PROJECT_ID=entity-resolution-487121,GCP_REGION=us-central1" \
-      #       --service-account=vertex-trainer@entity-resolution-487121.iam.gserviceaccount.com \
-      #       --allow-unauthenticated
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy entity-resolution \
+            --image=us-central1-docker.pkg.dev/entity-resolution-487121/ml-models/er-inference-api:latest \
+            --region=us-central1 \
+            --project=entity-resolution-487121 \
+            --service-account=vertex-trainer@entity-resolution-487121.iam.gserviceaccount.com \
+            --allow-unauthenticated \
+            --memory=2Gi \
+            --cpu=2 \
+            --timeout=600 \
+            --max-instances=1 \
+            --set-env-vars="GCP_BUCKET_NAME=entity-resolution-bucket-1,GCP_PROJECT_ID=entity-resolution-487121,CONFIG_PATH=/app/config/training_config.yaml,USE_MOCK_CLIENT=false,PRODUCTION=true"
 
-      # - name: Restart services on VM
-      #   run: |
-      #     gcloud compute ssh production-vm \
-      #       --zone=us-central1-a \
-      #       --project=entity-resolution-487121 \
-      #       --command="cd /opt/Entity-Resolution && git pull origin ${{ github.ref_name }} && bash setup.sh"
+      - name: Verify deployment
+        run: |
+          sleep 10
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://entity-resolution-756491711716.us-central1.run.app/health)
+          if [ "$STATUS" = "200" ]; then
+            echo "Deployment verified — /health returned 200"
+          else
+            echo "WARNING: /health returned $STATUS"
+          fi
