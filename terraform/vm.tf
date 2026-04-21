@@ -1,5 +1,5 @@
 resource "google_compute_instance" "airflow_vm" {
-  name         = "airflow-vm"
+  name         = "production-vm"
   machine_type = "e2-standard-4"
   zone         = var.zone
 
@@ -26,15 +26,19 @@ resource "google_compute_instance" "airflow_vm" {
       #!/bin/bash
       set -e
       apt-get update -y
-      apt-get install -y docker.io docker-compose git curl
+      apt-get install -y docker.io docker-compose git curl apt-transport-https ca-certificates gnupg
+      # Install gcloud CLI
+      curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+      echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" > /etc/apt/sources.list.d/google-cloud-sdk.list
+      apt-get update -y && apt-get install -y google-cloud-cli
       systemctl enable docker
       systemctl start docker
-      usermod -aG docker ubuntu
-      cd /home/ubuntu
+      cd /opt
       if [ ! -d "Entity-Resolution" ]; then
         git clone https://github.com/Entity-Resolution-Organization/Entity-Resolution.git
       fi
-      cd Entity-Resolution
+      chmod -R 777 /opt/Entity-Resolution
+      cd /opt/Entity-Resolution
       bash setup.sh
     SCRIPT
   }

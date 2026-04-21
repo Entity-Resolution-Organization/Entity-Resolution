@@ -47,7 +47,7 @@ jobs:
 
       - name: Restart services on VM
         run: |
-          gcloud compute ssh airflow-vm \
+          gcloud compute ssh production-vm \
             --zone=us-central1-a \
             --project=entity-resolution-487121 \
             --command="cd /home/ubuntu/Entity-Resolution && git pull origin main && bash setup.sh"
