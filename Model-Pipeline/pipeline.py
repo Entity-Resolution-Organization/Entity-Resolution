@@ -990,6 +990,7 @@ def run_pipeline(
             "max_replicas": 3,
         },
         enable_caching=False,
+        service_account=f"vertex-trainer@{PROJECT_ID}.iam.gserviceaccount.com",
     )
 
     job.run(sync=False)

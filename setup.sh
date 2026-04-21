@@ -49,6 +49,12 @@ cd ..
 echo "Starting Model Pipeline..."
 cd Model-Pipeline
 sudo docker-compose up -d mlflow
+# Build and push trainer image to Artifact Registry so Vertex AI pipeline components can pull it
+sudo docker build -t us-central1-docker.pkg.dev/entity-resolution-487121/ml-models/er-trainer:latest .
+sudo docker push us-central1-docker.pkg.dev/entity-resolution-487121/ml-models/er-trainer:latest
+# Compile KFP pipeline spec and upload to GCS so Airflow's RunPipelineJobOperator
+# can find it. Must run after MLflow is up since the trainer depends_on mlflow.
+sudo docker-compose run --rm trainer python pipeline.py --compile --upload
 cd ..
 
 # Start Inference Pipeline services
