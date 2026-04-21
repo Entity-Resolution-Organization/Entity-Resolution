@@ -39,6 +39,7 @@ jobs:
             --image=us-central1-docker.pkg.dev/entity-resolution-487121/ml-models/er-inference-api:latest \
             --region=us-central1 \
             --project=entity-resolution-487121 \
+            --service-account=vertex-trainer@entity-resolution-487121.iam.gserviceaccount.com \
             --allow-unauthenticated \
             --memory=2Gi \
             --cpu=2 \
