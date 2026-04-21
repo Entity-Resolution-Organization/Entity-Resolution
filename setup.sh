@@ -48,7 +48,7 @@ cd ..
 # Start Inference Pipeline services
 echo "Starting Inference Pipeline..."
 cd Inference-Pipeline
-sudo docker-compose up -d inference-api
+sudo docker-compose up -d inference-api inference-ui
 cd ..
 
 echo "=== Setup Complete ==="
