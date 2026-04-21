@@ -28,6 +28,18 @@ resource "google_project_iam_member" "airflow_secret_accessor" {
   member  = "serviceAccount:${google_service_account.airflow_sa.email}"
 }
 
+resource "google_project_iam_member" "airflow_aiplatform_user" {
+  project = var.project_id
+  role    = "roles/aiplatform.user"
+  member  = "serviceAccount:${google_service_account.airflow_sa.email}"
+}
+
+resource "google_service_account_iam_member" "airflow_sa_user_on_vertex_trainer" {
+  service_account_id = google_service_account.vertex_trainer_sa.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.airflow_sa.email}"
+}
+
 resource "google_project_iam_member" "vertex_storage_admin" {
   project = var.project_id
   role    = "roles/storage.admin"
@@ -61,6 +73,18 @@ resource "google_project_iam_member" "vertex_artifact_registry" {
 resource "google_project_iam_member" "vertex_run_admin" {
   project = var.project_id
   role    = "roles/run.admin"
+  member  = "serviceAccount:${google_service_account.vertex_trainer_sa.email}"
+}
+
+resource "google_project_iam_member" "vertex_cloudbuild_editor" {
+  project = var.project_id
+  role    = "roles/cloudbuild.builds.editor"
+  member  = "serviceAccount:${google_service_account.vertex_trainer_sa.email}"
+}
+
+resource "google_project_iam_member" "vertex_sa_user" {
+  project = var.project_id
+  role    = "roles/iam.serviceAccountUser"
   member  = "serviceAccount:${google_service_account.vertex_trainer_sa.email}"
 }
 

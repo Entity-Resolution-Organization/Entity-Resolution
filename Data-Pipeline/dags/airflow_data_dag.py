@@ -761,6 +761,7 @@ def trigger_model_pipeline(**context):
             "max_replicas": 3,
         },
         enable_caching=False,
+        service_account=f"vertex-trainer@{GCP_PROJECT_ID}.iam.gserviceaccount.com",
     )
 
     # Fire-and-forget: submit() returns immediately, run() would block
