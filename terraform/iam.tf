@@ -36,6 +36,12 @@ resource "google_project_iam_member" "airflow_aiplatform_user" {
   member  = "serviceAccount:${google_service_account.airflow_sa.email}"
 }
 
+resource "google_project_iam_member" "airflow_artifact_registry_writer" {
+  project = var.project_id
+  role    = "roles/artifactregistry.writer"
+  member  = "serviceAccount:${google_service_account.airflow_sa.email}"
+}
+
 resource "google_service_account_iam_member" "airflow_sa_user_on_vertex_trainer" {
   service_account_id = google_service_account.vertex_trainer_sa.name
   role               = "roles/iam.serviceAccountUser"
