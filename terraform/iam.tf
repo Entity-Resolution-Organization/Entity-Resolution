@@ -1,3 +1,5 @@
+data "google_project" "project" {}
+
 resource "google_service_account" "airflow_sa" {
   account_id   = "airflow-sa"
   display_name = "Entity Resolution Service Account"
@@ -36,6 +38,12 @@ resource "google_project_iam_member" "airflow_aiplatform_user" {
 
 resource "google_service_account_iam_member" "airflow_sa_user_on_vertex_trainer" {
   service_account_id = google_service_account.vertex_trainer_sa.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.airflow_sa.email}"
+}
+
+resource "google_service_account_iam_member" "airflow_sa_user_on_compute_default" {
+  service_account_id = "projects/${var.project_id}/serviceAccounts/${data.google_project.project.number}-compute@developer.gserviceaccount.com"
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${google_service_account.airflow_sa.email}"
 }
