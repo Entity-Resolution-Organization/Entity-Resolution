@@ -35,15 +35,15 @@ jobs:
           docker push \
             us-central1-docker.pkg.dev/entity-resolution-487121/ml-models/er-inference-api:latest
 
-      - name: Deploy to Cloud Run
-        run: |
-          gcloud run deploy er-inference-api \
-            --image=us-central1-docker.pkg.dev/entity-resolution-487121/ml-models/er-inference-api:latest \
-            --region=us-central1 \
-            --project=entity-resolution-487121 \
-            --set-env-vars="GCP_PROJECT_ID=entity-resolution-487121,GCP_REGION=us-central1" \
-            --service-account=vertex-trainer@entity-resolution-487121.iam.gserviceaccount.com \
-            --allow-unauthenticated
+      # - name: Deploy to Cloud Run
+      #   run: |
+      #     gcloud run deploy er-inference-api \
+      #       --image=us-central1-docker.pkg.dev/entity-resolution-487121/ml-models/er-inference-api:latest \
+      #       --region=us-central1 \
+      #       --project=entity-resolution-487121 \
+      #       --set-env-vars="GCP_PROJECT_ID=entity-resolution-487121,GCP_REGION=us-central1" \
+      #       --service-account=vertex-trainer@entity-resolution-487121.iam.gserviceaccount.com \
+      #       --allow-unauthenticated
 
       - name: Restart services on VM
         run: |
