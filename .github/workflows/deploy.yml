@@ -1,0 +1,53 @@
+name: Deploy to GCP
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          project_id: entity-resolution-487121
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Build and push Inference API image
+        run: |
+          docker build \
+            -t us-central1-docker.pkg.dev/entity-resolution-487121/ml-models/er-inference-api:latest \
+            ./Inference-Pipeline
+          docker push \
+            us-central1-docker.pkg.dev/entity-resolution-487121/ml-models/er-inference-api:latest
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy er-inference-api \
+            --image=us-central1-docker.pkg.dev/entity-resolution-487121/ml-models/er-inference-api:latest \
+            --region=us-central1 \
+            --project=entity-resolution-487121 \
+            --set-env-vars="GCP_PROJECT_ID=entity-resolution-487121,GCP_REGION=us-central1" \
+            --service-account=vertex-trainer@entity-resolution-487121.iam.gserviceaccount.com \
+            --allow-unauthenticated
+
+      - name: Restart services on VM
+        run: |
+          gcloud compute ssh production-vm \
+            --zone=us-central1-a \
+            --project=entity-resolution-487121 \
+            --command="cd /home/ubuntu/Entity-Resolution && git pull origin main && bash setup.sh"

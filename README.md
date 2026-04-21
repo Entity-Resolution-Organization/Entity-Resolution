@@ -139,6 +139,64 @@ gcloud run deploy entity-resolution \
   --memory 2Gi --cpu 2 --timeout 600
 ```
 
+
+---
+
+## Deployment Guide
+
+### Infrastructure Setup (Terraform)
+
+All GCP infrastructure is defined in the `terraform/` folder. To provision from scratch:
+
+```bash
+cd terraform/
+terraform init
+terraform apply
+```
+
+This creates the VM, GCS buckets, BigQuery dataset, Artifact Registry, Secret Manager secrets, and all firewall rules.
+
+### Environment Configuration
+
+Create `.env` files in each pipeline folder based on the `.env.example` templates, then upload to Secret Manager:
+
+```bash
+gcloud secrets versions add er-env-model      --data-file=Model-Pipeline/.env
+gcloud secrets versions add er-env-monitoring --data-file=Monitoring-Pipeline/.env
+gcloud secrets versions add er-env-data       --data-file=Data-Pipeline/.env
+```
+
+### Starting All Services
+
+The VM runs `setup.sh` automatically on first boot — it pulls secrets, injects the MLflow URI, and starts all containers. If it fails (e.g. secrets weren't populated in time), SSH in and re-run manually:
+
+```bash
+gcloud compute ssh production-vm --zone=us-central1-a
+cd /opt/Entity-Resolution
+bash setup.sh
+```
+
+### Service URLs
+
+| Service | URL |
+|---|---|
+| MLflow | `http://<VM_IP>:5000` |
+| Inference API + UI | `http://<VM_IP>:8000` |
+| Grafana Monitoring | `http://<VM_IP>:3000` |
+
+### CI/CD
+
+Pushing to `main` or `dev` automatically triggers `.github/workflows/deploy.yml` which builds the Inference API image, pushes it to Artifact Registry, and redeploys to Cloud Run.
+
+### Re-running After VM Restart
+
+```bash
+gcloud compute ssh production-vm --zone=us-central1-a
+cd /opt/Entity-Resolution && bash setup.sh
+```
+
+---
+
 ## Team
 
 Northeastern University — MLOps Spring 2026 — Group 13

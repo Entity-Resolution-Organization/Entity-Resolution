@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_INSTALL_PLUGINS: doitintl-bigquery-datasource
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/er-monitoring-dashboard.json:/var/lib/grafana/dashboards/er-monitoring-dashboard.json
+
+volumes:
+  grafana-data:

@@ -1,0 +1,9 @@
+apiVersion: 1
+datasources:
+  - name: BigQuery
+    type: doitintl-bigquery-datasource
+    access: proxy
+    jsonData:
+      authenticationType: gce
+      defaultProject: entity-resolution-487121
+      processingLocation: US
