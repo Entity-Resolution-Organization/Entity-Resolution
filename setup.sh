@@ -49,6 +49,9 @@ cd ..
 echo "Starting Model Pipeline..."
 cd Model-Pipeline
 sudo docker-compose up -d mlflow
+# Compile KFP pipeline spec and upload to GCS so Airflow's RunPipelineJobOperator
+# can find it. Must run after MLflow is up since the trainer depends_on mlflow.
+sudo docker-compose run --rm trainer python pipeline.py --compile --upload
 cd ..
 
 # Start Inference Pipeline services
