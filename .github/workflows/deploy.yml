@@ -44,7 +44,8 @@ jobs:
             --memory=2Gi \
             --cpu=2 \
             --timeout=600 \
-            --max-instances=1
+            --max-instances=1 \
+            --set-env-vars="GCP_BUCKET_NAME=entity-resolution-bucket-1,GCP_PROJECT_ID=entity-resolution-487121,CONFIG_PATH=/app/config/training_config.yaml,USE_MOCK_CLIENT=false,PRODUCTION=true"
 
       - name: Verify deployment
         run: |
