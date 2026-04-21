@@ -676,6 +676,9 @@ def deploy_to_endpoint_op(
     if existing:
         endpoint = existing[0]
         print(f"[deploy_to_endpoint_op] Reusing endpoint: {endpoint.resource_name}")
+        for dm in endpoint.list_models():
+            print(f"[deploy_to_endpoint_op] Undeploying existing model: {dm.id}")
+            endpoint.undeploy(deployed_model_id=dm.id, sync=True)
     else:
         endpoint = aiplatform.Endpoint.create(
             display_name=endpoint_display_name,
